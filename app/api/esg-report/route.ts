@@ -11,13 +11,12 @@ export async function GET() {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const [totalUsers, purchaseAgg, walletAgg] = await Promise.all([
+  const [totalUsers, purchaseAgg] = await Promise.all([
     prisma.user.count({ where: { role: "USER" } }),
     prisma.purchase.aggregate({
       _count: { id: true },
       _sum: { tokensEarned: true, price: true, sustainabilityScore: true },
     }),
-    prisma.wallet.aggregate({ _sum: { tokenBalance: true } }),
   ]);
 
   const purchases = await prisma.purchase.findMany({
