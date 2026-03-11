@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  name         String
+  email        String        @unique
+  passwordHash String
+  role         Role          @default(USER)
+  createdAt    DateTime      @default(now())
+  purchases    Purchase[]
+  transactions Transaction[]
+  wallet       Wallet?
+}
+
+model Wallet {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  tokenBalance    Int      @default(0)
+  moneyEquivalent Float    @default(0)
+  lastUpdated     DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id])
+}
+
+model Transaction {
+  id          String          @id @default(cuid())
+  userId      String
+  type        TransactionType
+  tokens      Int
+  moneyValue  Float
+  description String
+  timestamp   DateTime        @default(now())
+  user        User            @relation(fields: [userId], references: [id])
+}
+
+model Purchase {
+  id                  String   @id @default(cuid())
+  userId              String
+  productName         String
+  price               Float
+  sustainabilityScore Int
+  tokensEarned        Int
+  purchaseDate        DateTime @default(now())
+  externalId          String?  @unique
+  user                User     @relation(fields: [userId], references: [id])
+}
+
+model Corporate {
+  id               String      @id @default(cuid())
+  companyName      String
+  contactEmail     String      @unique
+  subscriptionPlan String      @default("basic")
+  createdAt        DateTime    @default(now())
+  esgReports       EsgReport[]
+}
+
+model EsgReport {
+  id                  String    @id @default(cuid())
+  corporateId         String
+  totalUsers          Int
+  totalGreenPurchases Int
+  totalTokensEarned   Int
+  carbonSaved         Float
+  reportDate          DateTime  @default(now())
+  corporate           Corporate @relation(fields: [corporateId], references: [id])
+}
+
+enum Role {
+  USER
+  CORPORATE
+}
+
+enum TransactionType {
+  EARN
+  REDEEM
+  BONUS
+}
