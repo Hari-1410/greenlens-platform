@@ -11,7 +11,7 @@ export default async function DashboardPage() {
   if (!session?.user) redirect("/login");
   if ((session.user as any).role === "CORPORATE") redirect("/corporate");
 
-  const userId = (session.user as any).id;
+  const userId = (session.user as any).id as string;
 
   const [wallet, purchases, transactions] = await Promise.all([
     prisma.wallet.findUnique({ where: { userId } }),
@@ -65,13 +65,13 @@ export default async function DashboardPage() {
         price: p.price,
         sustainabilityScore: p.sustainabilityScore,
         tokensEarned: p.tokensEarned,
-        externalId: p.externalId,
+        externalId: p.externalId ?? null,
         purchaseDate: p.purchaseDate.toISOString(),
       }))}
       transactions={transactions.map(t => ({
         id: t.id,
         userId: t.userId,
-        type: t.type,
+        type: t.type as string,
         tokens: t.tokens,
         moneyValue: t.moneyValue,
         description: t.description,
