@@ -6,6 +6,15 @@ export default auth((req) => {
   const isLoggedIn = !!req.auth;
   const userRole = (req.auth?.user as any)?.role;
 
+  // TEMPORARY DEBUG — remove after fixing
+  console.log("MIDDLEWARE DEBUG", {
+    pathname,
+    isLoggedIn,
+    userRole,
+    auth: JSON.stringify(req.auth),
+    cookies: req.cookies.getAll().map(c => c.name),
+  });
+
   if (pathname.startsWith("/dashboard")) {
     if (!isLoggedIn) return NextResponse.redirect(new URL("/login", req.url));
     if (userRole === "CORPORATE")
