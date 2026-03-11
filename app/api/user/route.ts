@@ -1,15 +1,48 @@
-﻿import { NextResponse } from "next/server";
+﻿// app/api/user/route.ts
+// Returns the currently logged-in user's id + role.
+// Called by the Chrome extension (cross-origin) to get userId before crediting tokens.
+
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { prisma } from "@/lib/prisma";
 
-export const dynamic = "force-dynamic";
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin":  "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Max-Age":       "86400",
+};
 
-export async function GET() {
-  const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const user = await prisma.user.findUnique({
-    where: { id: (session.user as any).id },
-    select: { id: true, name: true, email: true, role: true, createdAt: true },
-  });
-  return NextResponse.json(user);
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
+export async function GET(_req: NextRequest) {
+  try {
+    const session = await auth();
+
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: "Not authenticated" },
+        { status: 401, headers: CORS_HEADERS }
+      );
+    }
+
+    const user = session.user as any;
+
+    return NextResponse.json(
+      {
+        id:    user.id,
+        name:  user.name,
+        email: user.email,
+        role:  user.role,
+      },
+      { headers: CORS_HEADERS }
+    );
+  } catch (e) {
+    console.error("[/api/user]", e);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500, headers: CORS_HEADERS }
+    );
+  }
 }
