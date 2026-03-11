@@ -1,7 +1,9 @@
-import { auth } from "@/auth";
+﻿import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { DashboardClient } from "@/components/dashboard/DashboardClient";
+
+export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const session = await auth();
@@ -12,26 +14,13 @@ export default async function DashboardPage() {
 
   const [wallet, purchases, transactions] = await Promise.all([
     prisma.wallet.findUnique({ where: { userId } }),
-    prisma.purchase.findMany({
-      where: { userId },
-      orderBy: { purchaseDate: "desc" },
-      take: 20,
-    }),
-    prisma.transaction.findMany({
-      where: { userId },
-      orderBy: { timestamp: "desc" },
-      take: 20,
-    }),
+    prisma.purchase.findMany({ where: { userId }, orderBy: { purchaseDate: "desc" }, take: 20 }),
+    prisma.transaction.findMany({ where: { userId }, orderBy: { timestamp: "desc" }, take: 20 }),
   ]);
 
-  const carbonSaved = purchases.reduce((sum, p) => {
-    const factor = p.sustainabilityScore / 100;
-    return sum + p.price * 0.002 * factor;
-  }, 0);
-
+  const carbonSaved = purchases.reduce((sum, p) => sum + p.price * 0.002 * (p.sustainabilityScore / 100), 0);
   const streakDays = purchases.length > 0 ? Math.min(purchases.length * 2, 30) : 0;
 
-  // Monthly aggregates for chart (last 6 months)
   const now = new Date();
   const monthlyData = Array.from({ length: 6 }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - 5 + i, 1);
