@@ -1,39 +1,28 @@
-import { auth } from "@/auth";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { getToken } from "next-auth/jwt";
 
-export default auth((req) => {
+export async function middleware(req: NextRequest) {
+  const token = await getToken({ req, secret: process.env.AUTH_SECRET });
   const { pathname } = req.nextUrl;
-  const isLoggedIn = !!req.auth;
-  const userRole = (req.auth?.user as any)?.role;
+  const isLoggedIn = !!token;
+  const userRole = (token as any)?.role;
 
-  // Protect dashboard routes
   if (pathname.startsWith("/dashboard")) {
-    if (!isLoggedIn) {
-      return NextResponse.redirect(new URL("/login", req.url));
-    }
-    if (userRole === "CORPORATE") {
-      return NextResponse.redirect(new URL("/corporate", req.url));
-    }
+    if (!isLoggedIn) return NextResponse.redirect(new URL("/login", req.url));
+    if (userRole === "CORPORATE") return NextResponse.redirect(new URL("/corporate", req.url));
   }
 
-  // Protect corporate routes
   if (pathname.startsWith("/corporate")) {
-    if (!isLoggedIn) {
-      return NextResponse.redirect(new URL("/login", req.url));
-    }
-    if (userRole !== "CORPORATE") {
-      return NextResponse.redirect(new URL("/dashboard", req.url));
-    }
+    if (!isLoggedIn) return NextResponse.redirect(new URL("/login", req.url));
+    if (userRole !== "CORPORATE") return NextResponse.redirect(new URL("/dashboard", req.url));
   }
 
-  // Redirect logged-in users away from auth pages
   if (isLoggedIn && (pathname === "/login" || pathname === "/register")) {
-    const dest = userRole === "CORPORATE" ? "/corporate" : "/dashboard";
-    return NextResponse.redirect(new URL(dest, req.url));
+    return NextResponse.redirect(new URL(userRole === "CORPORATE" ? "/corporate" : "/dashboard", req.url));
   }
 
   return NextResponse.next();
-});
+}
 
 export const config = {
   matcher: ["/dashboard/:path*", "/corporate/:path*", "/login", "/register"],
