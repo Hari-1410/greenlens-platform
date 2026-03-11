@@ -1,95 +1,296 @@
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --brand: #22c55e;
-  --brand-glow: rgba(34,197,94,0.3);
-  --surface: #050a06;
+/* ── Base ────────────────────────────────────────────────────────────────── */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-surface-900 text-brand-300 antialiased;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Syne', sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-800;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-brand-900 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-brand-800;
+  }
 }
 
-* { box-sizing: border-box; }
+/* ── Components ──────────────────────────────────────────────────────────── */
+@layer components {
 
-html, body {
-  background: var(--surface);
-  color: #e2f5e8;
-  font-family: 'DM Sans', sans-serif;
-  -webkit-font-smoothing: antialiased;
+  /* ── Cards ── */
+  .glow-card {
+    @apply bg-surface-800 border border-brand-900/60;
+    box-shadow:
+      0 0 0 1px rgba(34, 197, 94, 0.04),
+      0 4px 24px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(34, 197, 94, 0.04);
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  }
+
+  .glow-card:hover {
+    @apply border-brand-900;
+    box-shadow:
+      0 0 0 1px rgba(34, 197, 94, 0.08),
+      0 8px 32px rgba(0, 0, 0, 0.5),
+      0 0 60px rgba(34, 197, 94, 0.04),
+      inset 0 1px 0 rgba(34, 197, 94, 0.06);
+  }
+
+  /* ── Buttons ── */
+  .gl-btn-primary {
+    @apply inline-flex items-center justify-center gap-2
+           bg-brand-500 hover:bg-brand-400
+           text-surface-900 font-semibold
+           rounded-xl transition-all duration-200
+           cursor-pointer select-none;
+    box-shadow: 0 0 20px rgba(34, 197, 94, 0.3), 0 2px 8px rgba(0,0,0,0.3);
+  }
+
+  .gl-btn-primary:hover {
+    box-shadow: 0 0 30px rgba(34, 197, 94, 0.45), 0 4px 12px rgba(0,0,0,0.4);
+    transform: translateY(-1px);
+  }
+
+  .gl-btn-primary:active {
+    transform: translateY(0);
+  }
+
+  .gl-btn-primary:disabled {
+    @apply opacity-50 cursor-not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .gl-btn-secondary {
+    @apply inline-flex items-center justify-center gap-2
+           bg-transparent hover:bg-brand-900/40
+           text-brand-400 hover:text-brand-300
+           border border-brand-800 hover:border-brand-700
+           font-semibold rounded-xl
+           transition-all duration-200
+           cursor-pointer select-none;
+  }
+
+  .gl-btn-secondary:hover {
+    transform: translateY(-1px);
+  }
+
+  .gl-btn-secondary:active {
+    transform: translateY(0);
+  }
+
+  /* ── Inputs ── */
+  .gl-input {
+    @apply w-full px-4 py-3
+           bg-surface-700 border border-brand-900/60
+           text-brand-200 placeholder-brand-800
+           rounded-xl text-sm
+           outline-none
+           transition-all duration-200;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  .gl-input:focus {
+    @apply border-brand-700 bg-surface-700;
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.08), 0 0 20px rgba(34, 197, 94, 0.06);
+  }
+
+  .gl-input::placeholder {
+    @apply text-brand-900;
+  }
+
+  /* ── Badges / Pills ── */
+  .gl-badge {
+    @apply inline-flex items-center gap-1
+           px-2.5 py-0.5 rounded-full
+           text-xs font-semibold font-mono;
+  }
+
+  .gl-badge-green {
+    @apply bg-brand-500/15 text-brand-300 border border-brand-500/25;
+  }
+
+  .gl-badge-muted {
+    @apply bg-surface-600 text-brand-700 border border-brand-900/50;
+  }
+
+  /* ── Stat number ── */
+  .gl-stat {
+    @apply font-display font-black;
+    font-family: 'Syne', sans-serif;
+  }
+
+  /* ── Section label ── */
+  .gl-label {
+    @apply text-brand-600 text-xs font-mono uppercase tracking-widest;
+  }
+
+  /* ── Divider ── */
+  .gl-divider {
+    @apply border-t border-brand-900/40 my-6;
+  }
+
+  /* ── Table ── */
+  .gl-table {
+    @apply w-full text-sm;
+  }
+
+  .gl-table thead tr {
+    @apply border-b border-brand-900/50;
+  }
+
+  .gl-table thead th {
+    @apply text-left px-4 py-3 text-brand-700 text-xs font-mono uppercase tracking-widest font-medium;
+  }
+
+  .gl-table tbody tr {
+    @apply border-b border-brand-900/20 transition-colors duration-150;
+  }
+
+  .gl-table tbody tr:hover {
+    @apply bg-brand-900/10;
+  }
+
+  .gl-table tbody td {
+    @apply px-4 py-3.5;
+  }
+
+  /* ── Nav link ── */
+  .gl-nav-link {
+    @apply w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium
+           text-brand-700 hover:text-brand-400 hover:bg-brand-900/30
+           transition-all duration-200 cursor-pointer;
+  }
+
+  .gl-nav-link.active {
+    @apply bg-brand-500/12 text-brand-300 border border-brand-500/25;
+  }
+
+  /* ── Tooltip-like info box ── */
+  .gl-info-box {
+    @apply bg-surface-700/40 border border-brand-900/40 rounded-xl p-4
+           text-brand-600 text-xs font-mono leading-relaxed;
+  }
+
+  /* ── Skeleton loader ── */
+  .gl-skeleton {
+    @apply bg-surface-700 rounded-lg animate-pulse;
+  }
+
+  /* ── Alert variants ── */
+  .gl-alert-error {
+    @apply bg-red-950/40 border border-red-800/40 text-red-400
+           rounded-xl px-4 py-3 text-sm;
+  }
+
+  .gl-alert-success {
+    @apply bg-brand-900/40 border border-brand-700/40 text-brand-300
+           rounded-xl px-4 py-3 text-sm;
+  }
+
+  .gl-alert-warning {
+    @apply bg-yellow-950/40 border border-yellow-800/40 text-yellow-400
+           rounded-xl px-4 py-3 text-sm;
+  }
+
+  /* ── Recharts tooltip override ── */
+  .recharts-tooltip-wrapper .recharts-default-tooltip {
+    @apply bg-surface-700 border border-brand-800 rounded-xl text-xs;
+    background: #0f1e17 !important;
+    border: 1px solid #166534 !important;
+    border-radius: 8px !important;
+  }
 }
 
-h1, h2, h3, h4, h5, h6 {
-  font-family: 'Syne', sans-serif;
+/* ── Utilities ───────────────────────────────────────────────────────────── */
+@layer utilities {
+  .text-gradient {
+    background: linear-gradient(135deg, #4ade80 0%, #22c55e 50%, #16a34a 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .glow-text {
+    text-shadow: 0 0 20px rgba(34, 197, 94, 0.4);
+  }
+
+  .glass {
+    background: rgba(10, 20, 16, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Sidebar active bg — used with bg-brand-500/12 which Tailwind doesn't emit by default */
+  .bg-brand-500\/12 {
+    background-color: rgba(34, 197, 94, 0.12);
+  }
 }
 
-.font-mono {
-  font-family: 'JetBrains Mono', monospace;
+/* ── Global animations ───────────────────────────────────────────────────── */
+@keyframes fadeUp {
+  0%   { opacity: 0; transform: translateY(16px); }
+  100% { opacity: 1; transform: translateY(0); }
 }
 
-/* Glow card */
-.glow-card {
-  background: rgba(14, 30, 20, 0.8);
-  border: 1px solid rgba(34,197,94,0.15);
-  box-shadow: 0 0 30px rgba(34,197,94,0.05), inset 0 1px 0 rgba(34,197,94,0.1);
-  backdrop-filter: blur(12px);
-  transition: box-shadow 0.3s ease, border-color 0.3s ease;
-}
-.glow-card:hover {
-  border-color: rgba(34,197,94,0.3);
-  box-shadow: 0 0 40px rgba(34,197,94,0.12), inset 0 1px 0 rgba(34,197,94,0.2);
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
 }
 
-/* Shimmer skeleton */
-.shimmer {
-  background: linear-gradient(90deg, #0f1e17 25%, #162a1f 50%, #0f1e17 75%);
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 12px rgba(34, 197, 94, 0.3); }
+  50%       { box-shadow: 0 0 28px rgba(34, 197, 94, 0.6); }
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.5s ease forwards;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 25%, rgba(34,197,94,0.08) 50%, transparent 75%);
   background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
+  animation: shimmer 2s linear infinite;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #050a06; }
-::-webkit-scrollbar-thumb { background: #1e3a2b; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #22c55e40; }
-
-/* Recharts override */
-.recharts-cartesian-grid-horizontal line,
-.recharts-cartesian-grid-vertical line {
-  stroke: rgba(34,197,94,0.08) !important;
-}
-.recharts-text { fill: #6b9e7a !important; font-family: 'JetBrains Mono', monospace !important; font-size: 11px !important; }
-
-/* Input */
-.gl-input {
-  @apply w-full bg-surface-700 border border-brand-900 rounded-lg px-4 py-3 text-brand-100
-         placeholder-brand-900 focus:outline-none focus:border-brand-500 focus:ring-1 
-         focus:ring-brand-500 transition-all duration-200 font-body text-sm;
-}
-
-/* Button */
-.gl-btn-primary {
-  @apply bg-brand-500 hover:bg-brand-400 text-surface-900 font-semibold rounded-lg px-6 py-3 
-         transition-all duration-200 font-display text-sm tracking-wide
-         shadow-lg shadow-brand-900/50 hover:shadow-brand-500/30;
-}
-
-.gl-btn-secondary {
-  @apply bg-transparent border border-brand-800 hover:border-brand-500 text-brand-300 
-         hover:text-brand-100 font-medium rounded-lg px-6 py-3 transition-all duration-200 text-sm;
-}
-
-/* Badge */
-.gl-badge {
-  @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium;
-}
-
-/* Noise texture overlay */
-.noise::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
-  pointer-events: none;
-  opacity: 0.4;
+.animate-pulse-glow {
+  animation: pulseGlow 2.5s ease-in-out infinite;
 }
