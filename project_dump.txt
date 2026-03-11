@@ -1,0 +1,1739 @@
+﻿========== C:\Users\hari1\Downloads\files (2)\app\api\esg-report\route.ts ==========
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+
+export async function GET() {
+  try {
+    const session = await auth();
+    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if ((session.user as any).role !== "CORPORATE") {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const totalUsers = await prisma.user.count({ where: { role: "USER" } });
+    const purchases = await prisma.purchase.findMany({
+      select: { price: true, sustainabilityScore: true, tokensEarned: true },
+    });
+
+    const carbonSaved = purchases.reduce((s, p) => s + p.price * 0.002 * (p.sustainabilityScore / 100), 0);
+    const totalTokens = purchases.reduce((s, p) => s + p.tokensEarned, 0);
+
+    return NextResponse.json({
+      totalUsers,
+      totalGreenPurchases: purchases.length,
+      totalTokensEarned: totalTokens,
+      carbonSaved: parseFloat(carbonSaved.toFixed(2)),
+      monetaryValueReturned: (totalTokens * 0.1).toFixed(2),
+      reportDate: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\api\purchase\route.ts ==========
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { calcTokens, tokensToMoney } from "@/lib/tokens";
+import { z } from "zod";
+
+export const dynamic = "force-dynamic";
+
+const schema = z.object({
+  userId: z.string().optional(),
+  productName: z.string().min(1),
+  price: z.number().positive(),
+  sustainabilityScore: z.number().min(0).max(100),
+  tokensEarned: z.number().min(0).optional(),
+  externalId: z.string().optional(),
+});
+
+export async function POST(req: NextRequest) {
+  try {
+    const session = await auth();
+    const body = await req.json();
+    const data = schema.parse(body);
+    const userId = (session?.user as any)?.id || data.userId;
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    if (data.externalId) {
+      const existing = await prisma.purchase.findUnique({ where: { externalId: data.externalId } });
+      if (existing) return NextResponse.json({ error: "Duplicate purchase", purchase: existing }, { status: 409 });
+    }
+    const tokens = data.tokensEarned ?? calcTokens(data.sustainabilityScore);
+    const moneyValue = tokensToMoney(tokens);
+    const [purchase] = await prisma.$transaction([
+      prisma.purchase.create({
+        data: { userId, productName: data.productName, price: data.price, sustainabilityScore: data.sustainabilityScore, tokensEarned: tokens, externalId: data.externalId },
+      }),
+      prisma.wallet.upsert({
+        where: { userId },
+        update: { tokenBalance: { increment: tokens }, moneyEquivalent: { increment: moneyValue }, lastUpdated: new Date() },
+        create: { userId, tokenBalance: tokens, moneyEquivalent: moneyValue },
+      }),
+      prisma.transaction.create({
+        data: { userId, type: "EARN", tokens, moneyValue, description: `Eco purchase: ${data.productName.slice(0, 50)}` },
+      }),
+    ]);
+    return NextResponse.json({ success: true, tokensEarned: tokens, moneyValue, purchase });
+  } catch (err: any) {
+    if (err?.name === "ZodError") return NextResponse.json({ error: "Invalid input", details: err.errors }, { status: 400 });
+    console.error("Purchase error:", err);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+export async function GET(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const purchases = await prisma.purchase.findMany({
+    where: { userId: (session.user as any).id },
+    orderBy: { purchaseDate: "desc" },
+    take: 50,
+  });
+  return NextResponse.json(purchases);
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\api\purchases\route.ts ==========
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const session = await auth();
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const purchases = await prisma.purchase.findMany({
+    where: { userId: (session.user as any).id },
+    orderBy: { purchaseDate: "desc" },
+    take: 50,
+  });
+  return NextResponse.json(purchases);
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\api\register\route.ts ==========
+import { NextRequest, NextResponse } from "next/server";
+import bcrypt from "bcryptjs";
+import { prisma } from "@/lib/prisma";
+import { z } from "zod";
+
+export const dynamic = "force-dynamic";
+
+const schema = z.object({
+  name: z.string().min(2),
+  email: z.string().email(),
+  password: z.string().min(8),
+  role: z.enum(["USER", "CORPORATE"]).default("USER"),
+});
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const data = schema.parse(body);
+    const existing = await prisma.user.findUnique({ where: { email: data.email } });
+    if (existing) return NextResponse.json({ error: "Email already registered" }, { status: 409 });
+    const passwordHash = await bcrypt.hash(data.password, 12);
+    const user = await prisma.user.create({
+      data: { name: data.name, email: data.email, passwordHash, role: data.role },
+    });
+    if (data.role === "USER") await prisma.wallet.create({ data: { userId: user.id, tokenBalance: 0, moneyEquivalent: 0 } });
+    if (data.role === "CORPORATE") await prisma.corporate.create({ data: { companyName: data.name, contactEmail: data.email } });
+    return NextResponse.json({ message: "Account created", userId: user.id }, { status: 201 });
+  } catch (err: any) {
+    if (err?.name === "ZodError") return NextResponse.json({ error: "Invalid input", details: err.errors }, { status: 400 });
+    console.error("Register error:", err);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\api\transactions\route.ts ==========
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const session = await auth();
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const transactions = await prisma.transaction.findMany({
+    where: { userId: (session.user as any).id },
+    orderBy: { timestamp: "desc" },
+    take: 50,
+  });
+  return NextResponse.json(transactions);
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\api\user\route.ts ==========
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const session = await auth();
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = await prisma.user.findUnique({
+    where: { id: (session.user as any).id },
+    select: { id: true, name: true, email: true, role: true, createdAt: true },
+  });
+  return NextResponse.json(user);
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\api\wallet\route.ts ==========
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const session = await auth();
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const wallet = await prisma.wallet.findUnique({
+    where: { userId: (session.user as any).id },
+  });
+  return NextResponse.json(wallet ?? { tokenBalance: 0, moneyEquivalent: 0 });
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\corporate\page.tsx ==========
+import { auth } from "@/auth";
+import { redirect } from "next/navigation";
+import { prisma } from "@/lib/prisma";
+import { CorporateClient } from "@/components/corporate/CorporateClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function CorporatePage() {
+  const session = await auth();
+  if (!session?.user) redirect("/login");
+  if ((session.user as any).role !== "CORPORATE") redirect("/dashboard");
+
+  const [totalUsers, purchaseAgg, walletAgg, recentPurchases] = await Promise.all([
+    prisma.user.count({ where: { role: "USER" } }),
+    prisma.purchase.aggregate({
+      _count: { id: true },
+      _sum: { tokensEarned: true, price: true, sustainabilityScore: true },
+    }),
+    prisma.wallet.aggregate({ _sum: { tokenBalance: true } }),
+    prisma.purchase.findMany({
+      orderBy: { purchaseDate: "desc" },
+      take: 100,
+      select: { price: true, sustainabilityScore: true, tokensEarned: true, purchaseDate: true, productName: true },
+    }),
+  ]);
+
+  const totalGreenPurchases = purchaseAgg._count.id;
+  const totalTokens = purchaseAgg._sum.tokensEarned || 0;
+  const carbonSaved = recentPurchases.reduce((s, p) => s + p.price * 0.002 * (p.sustainabilityScore / 100), 0);
+
+  const categories: Record<string, number> = {};
+  recentPurchases.forEach(p => {
+    const name = p.productName.toLowerCase();
+    const cat =
+      name.includes("organic") ? "Food & Organic" :
+      name.includes("bamboo") || name.includes("cotton") ? "Eco Materials" :
+      name.includes("solar") || name.includes("led") || name.includes("energy") ? "Energy Efficient" :
+      name.includes("recycle") || name.includes("compost") ? "Recycled" :
+      "Other Eco";
+    categories[cat] = (categories[cat] || 0) + 1;
+  });
+
+  const categoryData = Object.entries(categories).map(([name, value]) => ({ name, value }));
+
+  const now = new Date();
+  const monthlyChartData = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - 5 + i, 1);
+    const label = d.toLocaleString("default", { month: "short" });
+    const monthPurchases = recentPurchases.filter(p => {
+      const pd = new Date(p.purchaseDate);
+      return pd.getMonth() === d.getMonth() && pd.getFullYear() === d.getFullYear();
+    });
+    return {
+      month: label,
+      purchases: monthPurchases.length,
+      tokens: monthPurchases.reduce((s, p) => s + p.tokensEarned, 0),
+    };
+  });
+
+  return (
+    <CorporateClient
+      user={{ name: session.user.name || "Corporate", email: session.user.email || "" }}
+      stats={{ totalUsers, totalGreenPurchases, totalTokens, carbonSaved: parseFloat(carbonSaved.toFixed(2)) }}
+      monthlyData={monthlyChartData}
+      categoryData={categoryData}
+    />
+  );
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\dashboard\page.tsx ==========
+import { auth } from "@/auth";
+import { redirect } from "next/navigation";
+import { prisma } from "@/lib/prisma";
+import { DashboardClient } from "@/components/dashboard/DashboardClient";
+
+export const dynamic = "force-dynamic";
+
+export default async function DashboardPage() {
+  const session = await auth();
+  if (!session?.user) redirect("/login");
+  if ((session.user as any).role === "CORPORATE") redirect("/corporate");
+
+  const userId = (session.user as any).id;
+
+  const [wallet, purchases, transactions] = await Promise.all([
+    prisma.wallet.findUnique({ where: { userId } }),
+    prisma.purchase.findMany({ where: { userId }, orderBy: { purchaseDate: "desc" }, take: 20 }),
+    prisma.transaction.findMany({ where: { userId }, orderBy: { timestamp: "desc" }, take: 20 }),
+  ]);
+
+  const carbonSaved = purchases.reduce((sum, p) => sum + p.price * 0.002 * (p.sustainabilityScore / 100), 0);
+  const streakDays = purchases.length > 0 ? Math.min(purchases.length * 2, 30) : 0;
+
+  const now = new Date();
+  const monthlyData = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - 5 + i, 1);
+    const label = d.toLocaleString("default", { month: "short" });
+    const monthPurchases = purchases.filter(p => {
+      const pd = new Date(p.purchaseDate);
+      return pd.getMonth() === d.getMonth() && pd.getFullYear() === d.getFullYear();
+    });
+    const tokens = monthPurchases.reduce((s, p) => s + p.tokensEarned, 0);
+    const carbon = monthPurchases.reduce((s, p) => s + p.price * 0.002 * (p.sustainabilityScore / 100), 0);
+    return { month: label, tokens, carbon: parseFloat(carbon.toFixed(3)) };
+  });
+
+  return (
+    <DashboardClient
+      user={{ name: session.user.name || "User", email: session.user.email || "" }}
+      wallet={wallet ? { tokenBalance: wallet.tokenBalance, moneyEquivalent: wallet.moneyEquivalent } : { tokenBalance: 0, moneyEquivalent: 0 }}
+      purchases={purchases.map(p => ({ ...p, purchaseDate: p.purchaseDate.toISOString() }))}
+      transactions={transactions.map(t => ({ ...t, timestamp: t.timestamp.toISOString() }))}
+      carbonSaved={carbonSaved}
+      streakDays={streakDays}
+      monthlyData={monthlyData}
+    />
+  );
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\layout.tsx ==========
+import type { Metadata } from "next";
+import "./globals.css";
+import { SessionProvider } from "./providers";
+
+export const metadata: Metadata = {
+  title: "GreenLens â€“ Sustainable Shopping Rewards",
+  description: "Earn Green Tokens for every eco-friendly purchase. Track your sustainability impact.",
+  icons: { icon: "/favicon.ico" },
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" suppressHydrationWarning>
+      <body className="min-h-screen bg-surface-900 antialiased">
+        <SessionProvider>{children}</SessionProvider>
+      </body>
+    </html>
+  );
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\login\page.tsx ==========
+"use client";
+import { useState } from "react";
+import { signIn, getSession } from "next-auth/react"; // âœ… added getSession
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+
+export default function LoginPage() {
+  const router = useRouter();
+  const [form, setForm] = useState({ email: "", password: "" });
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+
+    const res = await signIn("credentials", {
+      redirect: false,
+      email: form.email,
+      password: form.password,
+    });
+
+    setLoading(false);
+
+    if (res?.error) {
+      setError("Invalid email or password");
+      return;
+    }
+
+    // âœ… Fix: hard redirect via window.location instead of router.push()
+    // router.push() does a soft navigation â€” middleware intercepts it before
+    // the JWT cookie is fully committed, causing the loop back to /login.
+    // window.location.href forces a full page reload so middleware reads
+    // the fresh cookie correctly on the next request.
+    const session = await getSession();
+    const role = (session?.user as any)?.role;
+
+    if (role === "CORPORATE") {
+      window.location.href = "/corporate";
+    } else {
+      window.location.href = "/dashboard";
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4 relative">
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(circle at 50% 30%, rgba(34,197,94,0.05) 0%, transparent 60%)",
+        }}
+      />
+
+      <div className="w-full max-w-md relative">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <Link href="/" className="inline-flex items-center gap-2 mb-6">
+            <span className="text-3xl">ðŸŒ¿</span>
+            <span className="font-display font-bold text-xl text-brand-300">
+              GreenLens
+            </span>
+          </Link>
+          <h1 className="font-display text-2xl font-bold text-brand-100">
+            Welcome back
+          </h1>
+          <p className="text-brand-600 text-sm mt-1">Sign in to your account</p>
+        </div>
+
+        <div className="glow-card rounded-2xl p-8">
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div>
+              <label className="block text-brand-400 text-xs font-mono uppercase tracking-widest mb-2">
+                Email
+              </label>
+              <input
+                type="email"
+                className="gl-input"
+                placeholder="you@example.com"
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-brand-400 text-xs font-mono uppercase tracking-widest mb-2">
+                Password
+              </label>
+              <input
+                type="password"
+                className="gl-input"
+                placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                required
+              />
+            </div>
+
+            {error && (
+              <div className="bg-red-900/20 border border-red-800/50 text-red-400 text-sm rounded-lg px-4 py-3">
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="gl-btn-primary w-full py-3"
+              disabled={loading}
+            >
+              {loading ? "Signing inâ€¦" : "Sign In â†’"}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <p className="text-brand-700 text-sm">
+              Don&apos;t have an account?{" "}
+              <Link
+                href="/register"
+                className="text-brand-400 hover:text-brand-300 transition-colors font-medium"
+              >
+                Create one
+              </Link>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\page.tsx ==========
+import Link from "next/link";
+
+const CERTS = [
+  "Climate Pledge Friendly", "USDA Organic", "FSC Certified",
+  "Fair Trade", "ENERGY STAR", "B Corp", "OEKO-TEX", "Rainforest Alliance",
+];
+
+const STEPS = [
+  { num: "01", title: "Install Extension", desc: "Add GreenCart to Chrome in seconds. It runs silently in the background." },
+  { num: "02", title: "Shop on Amazon", desc: "Browse normally. Green badges appear on Climate Pledge Friendly products." },
+  { num: "03", title: "Earn Green Tokens", desc: "Every eco-purchase earns tokens based on the product's sustainability score." },
+  { num: "04", title: "Track & Redeem", desc: "Watch your wallet grow. Tokens convert to real monetary value." },
+];
+
+const FEATURES = [
+  { icon: "ðŸŒ¿", title: "Live Sustainability Scores", desc: "Real-time detection of 30+ eco-certifications directly from Amazon's Climate Pledge Friendly program." },
+  { icon: "âš¡", title: "Token Economy", desc: "Score 80-100 earns 20 tokens. Score 60-79 earns 12. Every green choice pays off." },
+  { icon: "ðŸ“Š", title: "Impact Dashboard", desc: "Visualize your carbon footprint reduction, spending trends, and green streaks." },
+  { icon: "ðŸ¢", title: "Corporate ESG Analytics", desc: "Anonymized aggregate data for businesses tracking sustainability KPIs." },
+];
+
+export default function Home() {
+  return (
+    <main className="relative overflow-hidden">
+      {/* Background grid */}
+      <div className="fixed inset-0 pointer-events-none"
+        style={{
+          backgroundImage: `radial-gradient(circle at 20% 20%, rgba(34,197,94,0.06) 0%, transparent 50%),
+                            radial-gradient(circle at 80% 80%, rgba(34,197,94,0.04) 0%, transparent 50%)`,
+        }}
+      />
+
+      {/* Nav */}
+      <nav className="fixed top-0 left-0 right-0 z-50 border-b border-brand-900/50 bg-surface-900/80 backdrop-blur-xl">
+        <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">ðŸŒ¿</span>
+            <span className="font-display font-bold text-lg text-brand-300 tracking-tight">GreenLens</span>
+          </div>
+          <div className="hidden md:flex items-center gap-8 text-sm text-brand-600 font-medium">
+            <a href="#how" className="hover:text-brand-300 transition-colors">How it works</a>
+            <a href="#features" className="hover:text-brand-300 transition-colors">Features</a>
+            <a href="#corporate" className="hover:text-brand-300 transition-colors">Corporate</a>
+          </div>
+          <div className="flex items-center gap-3">
+            <Link href="/login" className="gl-btn-secondary text-sm py-2 px-4">Sign in</Link>
+            <Link href="/register" className="gl-btn-primary text-sm py-2 px-4">Get Started</Link>
+          </div>
+        </div>
+      </nav>
+
+      {/* Hero */}
+      <section className="relative pt-32 pb-24 px-6">
+        <div className="max-w-4xl mx-auto text-center">
+          {/* Cert marquee pill */}
+          <div className="inline-flex items-center gap-2 bg-brand-900/30 border border-brand-800/50 rounded-full px-4 py-1.5 mb-8">
+            <span className="w-2 h-2 bg-brand-400 rounded-full animate-pulse-slow" />
+            <span className="text-brand-400 text-xs font-mono font-medium tracking-widest uppercase">
+              30+ Eco-Certifications Detected
+            </span>
+          </div>
+
+          <h1 className="font-display text-5xl md:text-7xl font-bold leading-tight tracking-tight mb-6">
+            <span className="text-brand-100">Shop green.</span>
+            <br />
+            <span className="text-brand-400">Earn rewards.</span>
+            <br />
+            <span className="text-brand-700">Save the planet.</span>
+          </h1>
+
+          <p className="text-brand-500 text-lg md:text-xl max-w-2xl mx-auto mb-10 leading-relaxed font-body">
+            GreenLens detects eco-certified products on Amazon in real time, 
+            rewards you with Green Tokens for sustainable choices, and turns your 
+            shopping habits into measurable climate impact.
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-4 justify-center mb-16">
+            <Link href="/register" className="gl-btn-primary text-base py-4 px-8">
+              Start Earning Tokens â†’
+            </Link>
+            <a href="#how" className="gl-btn-secondary text-base py-4 px-8">
+              See How It Works
+            </a>
+          </div>
+
+          {/* Stats row */}
+          <div className="grid grid-cols-3 gap-6 max-w-lg mx-auto">
+            {[
+              { val: "â‚¹0.10", label: "per token earned" },
+              { val: "30+", label: "certifications tracked" },
+              { val: "100%", label: "data privacy" },
+            ].map(s => (
+              <div key={s.label} className="text-center">
+                <div className="font-display font-bold text-2xl text-brand-300">{s.val}</div>
+                <div className="text-brand-700 text-xs mt-1 font-mono">{s.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Cert scroll */}
+      <div className="border-y border-brand-900/40 py-4 overflow-hidden bg-surface-800/30">
+        <div className="flex gap-8 animate-none" style={{ width: "max-content" }}>
+          {[...CERTS, ...CERTS].map((c, i) => (
+            <span key={i} className="text-brand-700 text-sm font-mono whitespace-nowrap flex items-center gap-2">
+              <span className="text-brand-500">âœ¦</span> {c}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* How it works */}
+      <section id="how" className="py-24 px-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-16">
+            <p className="text-brand-500 text-sm font-mono tracking-widest uppercase mb-3">The Process</p>
+            <h2 className="font-display text-4xl md:text-5xl font-bold text-brand-100">How GreenLens Works</h2>
+          </div>
+          <div className="grid md:grid-cols-2 gap-6">
+            {STEPS.map(step => (
+              <div key={step.num} className="glow-card rounded-2xl p-6 relative overflow-hidden">
+                <div className="text-5xl font-display font-black text-brand-900/60 absolute top-4 right-6 select-none">
+                  {step.num}
+                </div>
+                <div className="relative">
+                  <h3 className="font-display font-bold text-xl text-brand-200 mb-2">{step.title}</h3>
+                  <p className="text-brand-600 text-sm leading-relaxed">{step.desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Token Economy */}
+      <section className="py-16 px-6 bg-surface-800/20">
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center mb-12">
+            <p className="text-brand-500 text-sm font-mono tracking-widest uppercase mb-3">Token Economy</p>
+            <h2 className="font-display text-4xl font-bold text-brand-100">Earn More for Better Choices</h2>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-4">
+            {[
+              { range: "Score 80â€“100", tokens: 20, color: "brand-400", example: "20 tokens = â‚¹2.00" },
+              { range: "Score 60â€“79", tokens: 12, color: "brand-500", example: "12 tokens = â‚¹1.20" },
+              { range: "Score 40â€“59", tokens: 5, color: "brand-700", example: "5 tokens = â‚¹0.50" },
+            ].map(tier => (
+              <div key={tier.range} className="glow-card rounded-2xl p-6 text-center">
+                <div className={`font-display text-4xl font-black text-${tier.color} mb-2`}>
+                  {tier.tokens}
+                </div>
+                <div className="text-brand-300 font-semibold text-sm mb-1">tokens</div>
+                <div className="text-brand-600 text-xs font-mono mb-3">{tier.range}</div>
+                <div className="text-brand-500 text-xs border border-brand-800 rounded-full px-3 py-1 inline-block">
+                  {tier.example}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-center text-brand-700 text-xs font-mono mt-6">
+            1 Green Token = â‚¹0.10 Â· Tokens accumulate in your wallet and can be redeemed
+          </p>
+        </div>
+      </section>
+
+      {/* Features */}
+      <section id="features" className="py-24 px-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-16">
+            <p className="text-brand-500 text-sm font-mono tracking-widest uppercase mb-3">Features</p>
+            <h2 className="font-display text-4xl md:text-5xl font-bold text-brand-100">Everything You Need</h2>
+          </div>
+          <div className="grid md:grid-cols-2 gap-6">
+            {FEATURES.map(f => (
+              <div key={f.title} className="glow-card rounded-2xl p-6 flex gap-5">
+                <div className="text-3xl shrink-0">{f.icon}</div>
+                <div>
+                  <h3 className="font-display font-bold text-lg text-brand-200 mb-2">{f.title}</h3>
+                  <p className="text-brand-600 text-sm leading-relaxed">{f.desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Corporate */}
+      <section id="corporate" className="py-24 px-6 bg-surface-800/20">
+        <div className="max-w-4xl mx-auto text-center">
+          <p className="text-brand-500 text-sm font-mono tracking-widest uppercase mb-3">For Business</p>
+          <h2 className="font-display text-4xl md:text-5xl font-bold text-brand-100 mb-6">
+            ESG Analytics Dashboard
+          </h2>
+          <p className="text-brand-500 text-lg max-w-2xl mx-auto mb-10 leading-relaxed">
+            Access anonymized aggregate data on sustainable shopping trends across 
+            thousands of users. Generate PDF ESG reports for investors and regulators.
+          </p>
+          <div className="grid sm:grid-cols-3 gap-4 mb-10">
+            {[
+              { label: "Total Green Shoppers", icon: "ðŸ‘¥" },
+              { label: "Carbon Reduction (kg COâ‚‚)", icon: "ðŸŒ" },
+              { label: "Category Analytics", icon: "ðŸ“Š" },
+            ].map(m => (
+              <div key={m.label} className="glow-card rounded-xl p-5 text-center">
+                <div className="text-2xl mb-2">{m.icon}</div>
+                <div className="text-brand-400 text-sm font-medium">{m.label}</div>
+              </div>
+            ))}
+          </div>
+          <Link href="/register?role=CORPORATE" className="gl-btn-primary py-4 px-8 inline-block">
+            Get Corporate Access â†’
+          </Link>
+        </div>
+      </section>
+
+      {/* Download CTA */}
+      <section className="py-24 px-6">
+        <div className="max-w-2xl mx-auto text-center">
+          <div className="glow-card rounded-3xl p-10 relative overflow-hidden">
+            <div className="absolute inset-0 pointer-events-none"
+              style={{ background: "radial-gradient(circle at 50% 0%, rgba(34,197,94,0.1) 0%, transparent 70%)" }} />
+            <div className="relative">
+              <div className="text-5xl mb-4">ðŸŒ¿</div>
+              <h2 className="font-display text-3xl font-bold text-brand-100 mb-4">
+                Start Your Green Journey
+              </h2>
+              <p className="text-brand-500 mb-8 text-sm leading-relaxed">
+                Create your free account, install the extension, and start earning 
+                tokens on your very next Amazon purchase.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <Link href="/register" className="gl-btn-primary py-3 px-8">
+                  Create Free Account
+                </Link>
+                <Link href="/login" className="gl-btn-secondary py-3 px-8">
+                  Sign In
+                </Link>
+              </div>
+              <p className="text-brand-800 text-xs mt-6 font-mono">
+                No credit card required Â· Free forever for individuals
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="border-t border-brand-900/40 py-8 px-6">
+        <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">ðŸŒ¿</span>
+            <span className="font-display font-bold text-brand-700">GreenLens</span>
+          </div>
+          <p className="text-brand-800 text-xs font-mono">
+            Â© {new Date().getFullYear()} GreenLens Platform. Making every purchase count.
+          </p>
+          <div className="flex gap-6 text-xs text-brand-700 font-mono">
+            <a href="#" className="hover:text-brand-400 transition-colors">Privacy</a>
+            <a href="#" className="hover:text-brand-400 transition-colors">Terms</a>
+            <a href="#" className="hover:text-brand-400 transition-colors">Contact</a>
+          </div>
+        </div>
+      </footer>
+    </main>
+  );
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\providers.tsx ==========
+"use client";
+import { SessionProvider as NextAuthSessionProvider } from "next-auth/react";
+
+export function SessionProvider({ children }: { children: React.ReactNode }) {
+  return <NextAuthSessionProvider>{children}</NextAuthSessionProvider>;
+}
+
+========== C:\Users\hari1\Downloads\files (2)\app\register\page.tsx ==========
+"use client";
+import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { signIn } from "next-auth/react";
+
+export default function RegisterPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const defaultRole = searchParams.get("role") === "CORPORATE" ? "CORPORATE" : "USER";
+
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+    role: defaultRole as "USER" | "CORPORATE",
+  });
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+
+    const res = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      setError(data.error || "Registration failed");
+      setLoading(false);
+      return;
+    }
+
+    const signInRes = await signIn("credentials", {
+      redirect: false,
+      email: form.email,
+      password: form.password,
+    });
+
+    setLoading(false);
+
+    if (signInRes?.error) {
+      setError("Account created but login failed. Please sign in manually.");
+      router.push("/login");
+      return;
+    }
+
+    router.push(form.role === "CORPORATE" ? "/corporate" : "/dashboard");
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4 py-12 relative">
+      <div className="absolute inset-0 pointer-events-none"
+        style={{ background: "radial-gradient(circle at 50% 30%, rgba(34,197,94,0.05) 0%, transparent 60%)" }} />
+
+      <div className="w-full max-w-md relative">
+        <div className="text-center mb-8">
+          <Link href="/" className="inline-flex items-center gap-2 mb-6">
+            <span className="text-3xl">ðŸŒ¿</span>
+            <span className="font-display font-bold text-xl text-brand-300">GreenLens</span>
+          </Link>
+          <h1 className="font-display text-2xl font-bold text-brand-100">Create your account</h1>
+          <p className="text-brand-600 text-sm mt-1">Start earning Green Tokens today</p>
+        </div>
+
+        <div className="glow-card rounded-2xl p-8">
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div>
+              <label className="block text-brand-400 text-xs font-mono uppercase tracking-widest mb-2">
+                Account Type
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                {(["USER", "CORPORATE"] as const).map(r => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setForm({ ...form, role: r })}
+                    className={`py-2.5 rounded-lg text-sm font-medium transition-all duration-200 border ${
+                      form.role === r
+                        ? "bg-brand-500/20 border-brand-500 text-brand-300"
+                        : "bg-transparent border-brand-900 text-brand-700 hover:border-brand-700"
+                    }`}
+                  >
+                    {r === "USER" ? "ðŸ‘¤ Individual" : "ðŸ¢ Corporate"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-brand-400 text-xs font-mono uppercase tracking-widest mb-2">
+                {form.role === "CORPORATE" ? "Company Name" : "Full Name"}
+              </label>
+              <input
+                type="text"
+                className="gl-input"
+                placeholder={form.role === "CORPORATE" ? "Acme Corp" : "Jane Doe"}
+                value={form.name}
+                onChange={e => setForm({ ...form, name: e.target.value })}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-brand-400 text-xs font-mono uppercase tracking-widest mb-2">
+                Email
+              </label>
+              <input
+                type="email"
+                className="gl-input"
+                placeholder="you@example.com"
+                value={form.email}
+                onChange={e => setForm({ ...form, email: e.target.value })}
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-brand-400 text-xs font-mono uppercase tracking-widest mb-2">
+                Password
+              </label>
+              <input
+                type="password"
+                className="gl-input"
+                placeholder="Min. 8 characters"
+                minLength={8}
+                value={form.password}
+                onChange={e => setForm({ ...form, password: e.target.value })}
+                required
+              />
+            </div>
+
+            {error && (
+              <div className="bg-red-900/20 border border-red-800/50 text-red-400 text-sm rounded-lg px-4 py-3">
+                {error}
+              </div>
+            )}
+
+            <button type="submit" className="gl-btn-primary w-full py-3" disabled={loading}>
+              {loading ? "Creating accountâ€¦" : "Create Account â†’"}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <p className="text-brand-700 text-sm">
+              Already have an account?{" "}
+              <Link href="/login" className="text-brand-400 hover:text-brand-300 transition-colors font-medium">
+                Sign in
+              </Link>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+========== C:\Users\hari1\Downloads\files (2)\auth.ts ==========
+export const runtime = "nodejs";
+
+import NextAuth from "next-auth";
+import Credentials from "next-auth/providers/credentials";
+
+export const { handlers, auth, signIn, signOut } = NextAuth({
+  providers: [
+    Credentials({
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      async authorize(credentials) {
+        if (!credentials?.email || !credentials?.password) return null;
+
+        const { prisma } = await import("@/lib/prisma");
+        const bcrypt = await import("bcryptjs");
+
+        const user = await prisma.user.findUnique({
+          where: { email: credentials.email as string },
+        });
+
+        if (!user) return null;
+
+        const valid = await bcrypt.compare(
+          credentials.password as string,
+          user.passwordHash
+        );
+
+        if (!valid) return null;
+
+        return {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        };
+      },
+    }),
+  ],
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) {
+        token.id = user.id;
+        token.role = (user as any).role;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user) {
+        (session.user as any).id = token.id;
+        (session.user as any).role = token.role;
+      }
+      return session;
+    },
+  },
+  pages: {
+    signIn: "/login",
+  },
+  session: { strategy: "jwt" },
+});
+
+========== C:\Users\hari1\Downloads\files (2)\components\corporate\CorporateClient.tsx ==========
+"use client";
+import { useState } from "react";
+import { signOut } from "next-auth/react";
+import {
+  BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+} from "recharts";
+import Link from "next/link";
+
+const PIE_COLORS = ["#22c55e", "#4ade80", "#86efac", "#16a34a", "#166534"];
+
+interface CorporateClientProps {
+  user: { name: string; email: string };
+  stats: { totalUsers: number; totalGreenPurchases: number; totalTokens: number; carbonSaved: number };
+  monthlyData: { month: string; purchases: number; tokens: number }[];
+  categoryData: { name: string; value: number }[];
+}
+
+export function CorporateClient({ user, stats, monthlyData, categoryData }: CorporateClientProps) {
+  const [generating, setGenerating] = useState(false);
+
+  async function downloadReport() {
+    setGenerating(true);
+    const { default: jsPDF } = await import("jspdf");
+    const { default: autoTable } = await import("jspdf-autotable");
+
+    const doc = new jsPDF();
+    const now = new Date();
+
+    // Header
+    doc.setFillColor(5, 10, 6);
+    doc.rect(0, 0, 210, 297, "F");
+    doc.setTextColor(34, 197, 94);
+    doc.setFontSize(24);
+    doc.setFont("helvetica", "bold");
+    doc.text("GreenLens ESG Report", 20, 30);
+
+    doc.setTextColor(134, 239, 172);
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Company: ${user.name}`, 20, 45);
+    doc.text(`Report Date: ${now.toLocaleDateString("en-IN")}`, 20, 55);
+    doc.text(`Generated: ${now.toLocaleString("en-IN")}`, 20, 65);
+
+    // Divider
+    doc.setDrawColor(34, 197, 94);
+    doc.setLineWidth(0.5);
+    doc.line(20, 72, 190, 72);
+
+    // Key metrics
+    doc.setTextColor(34, 197, 94);
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Key Sustainability Metrics", 20, 85);
+
+    autoTable(doc, {
+      startY: 92,
+      head: [["Metric", "Value"]],
+      body: [
+        ["Total Green Shoppers", stats.totalUsers.toLocaleString()],
+        ["Total Sustainable Purchases", stats.totalGreenPurchases.toLocaleString()],
+        ["Green Tokens Distributed", stats.totalTokens.toLocaleString()],
+        ["Estimated Carbon Saved (kg COâ‚‚)", stats.carbonSaved.toFixed(2)],
+        ["Monetary Value Returned (â‚¹)", (stats.totalTokens * 0.1).toFixed(2)],
+      ],
+      styles: { fillColor: [14, 30, 20], textColor: [134, 239, 172], fontSize: 10 },
+      headStyles: { fillColor: [22, 101, 52], textColor: [134, 239, 172] },
+      alternateRowStyles: { fillColor: [10, 20, 16] },
+    });
+
+    // Category breakdown
+    if (categoryData.length > 0) {
+      const afterTable = (doc as any).lastAutoTable.finalY + 15;
+      doc.setTextColor(34, 197, 94);
+      doc.setFontSize(14);
+      doc.setFont("helvetica", "bold");
+      doc.text("Category Breakdown", 20, afterTable);
+
+      autoTable(doc, {
+        startY: afterTable + 7,
+        head: [["Category", "Purchases"]],
+        body: categoryData.map(c => [c.name, c.value]),
+        styles: { fillColor: [14, 30, 20], textColor: [134, 239, 172], fontSize: 10 },
+        headStyles: { fillColor: [22, 101, 52], textColor: [134, 239, 172] },
+        alternateRowStyles: { fillColor: [10, 20, 16] },
+      });
+    }
+
+    // Footer
+    doc.setTextColor(30, 58, 43);
+    doc.setFontSize(8);
+    doc.text("This report contains anonymized aggregate data. Individual user data is not disclosed.", 20, 285);
+    doc.text("Generated by GreenLens Platform Â· greenlens.app", 20, 291);
+
+    doc.save(`GreenLens_ESG_Report_${now.toISOString().split("T")[0]}.pdf`);
+    setGenerating(false);
+  }
+
+  return (
+    <div className="min-h-screen bg-surface-900">
+      {/* Sidebar */}
+      <aside className="fixed top-0 left-0 h-full w-60 border-r border-brand-900/40 bg-surface-800/50 backdrop-blur-xl flex flex-col z-40">
+        <div className="p-6 border-b border-brand-900/40">
+          <Link href="/" className="flex items-center gap-2">
+            <span className="text-2xl">ðŸŒ¿</span>
+            <span className="font-display font-bold text-brand-300">GreenLens</span>
+          </Link>
+          <div className="mt-3 inline-flex items-center gap-1.5 bg-brand-900/40 border border-brand-700/30 rounded-full px-3 py-1">
+            <span className="w-1.5 h-1.5 bg-brand-400 rounded-full" />
+            <span className="text-brand-500 text-xs font-mono">Corporate</span>
+          </div>
+        </div>
+
+        <nav className="flex-1 p-4 space-y-1">
+          <div className="px-4 py-2.5 bg-brand-500/15 text-brand-300 border border-brand-500/30 rounded-lg text-sm font-medium">
+            <span className="font-mono text-xs mr-2">â—Ž</span> ESG Dashboard
+          </div>
+        </nav>
+
+        <div className="p-4 border-t border-brand-900/40">
+          <div className="mb-3 px-3">
+            <p className="text-brand-300 text-sm font-medium truncate">{user.name}</p>
+            <p className="text-brand-700 text-xs font-mono truncate">{user.email}</p>
+          </div>
+          <button
+            onClick={() => signOut({ callbackUrl: "/" })}
+            className="w-full text-left px-3 py-2 text-brand-700 text-xs hover:text-red-400 transition-colors font-mono"
+          >
+            â†’ Sign out
+          </button>
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="ml-60 p-8">
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="font-display text-3xl font-bold text-brand-100">ESG Analytics</h1>
+            <p className="text-brand-600 text-sm mt-1 font-mono">Anonymized aggregate sustainability data</p>
+          </div>
+          <button
+            onClick={downloadReport}
+            disabled={generating}
+            className="gl-btn-primary py-3 px-6 flex items-center gap-2"
+          >
+            <span>{generating ? "â³" : "ðŸ“„"}</span>
+            {generating ? "Generatingâ€¦" : "Download ESG Report"}
+          </button>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          {[
+            { label: "Green Shoppers", value: stats.totalUsers.toLocaleString(), icon: "ðŸ‘¥", color: "brand-300" },
+            { label: "Eco Purchases", value: stats.totalGreenPurchases.toLocaleString(), icon: "ðŸ›’", color: "brand-400" },
+            { label: "Tokens Distributed", value: stats.totalTokens.toLocaleString(), icon: "ðŸª™", color: "brand-500" },
+            { label: "Carbon Saved (kg)", value: stats.carbonSaved.toFixed(1), icon: "ðŸŒ", color: "brand-400" },
+          ].map(s => (
+            <div key={s.label} className="glow-card rounded-2xl p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-xl">{s.icon}</span>
+                <p className="text-brand-600 text-xs font-mono uppercase tracking-widest">{s.label}</p>
+              </div>
+              <p className={`font-display text-3xl font-black text-${s.color}`}>{s.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Monetary return */}
+        <div className="glow-card rounded-xl p-4 mb-6 flex items-center gap-4 border-brand-500/20">
+          <span className="text-2xl">ðŸ’°</span>
+          <div>
+            <p className="text-brand-300 font-medium text-sm">Total Monetary Value Returned to Users</p>
+            <p className="font-display text-2xl font-bold text-brand-400">
+              â‚¹{(stats.totalTokens * 0.1).toFixed(2)}
+            </p>
+          </div>
+          <div className="ml-auto text-brand-700 text-xs font-mono">@ â‚¹0.10 per token</div>
+        </div>
+
+        {/* Charts */}
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="glow-card rounded-2xl p-6">
+            <p className="text-brand-400 text-sm font-medium mb-4">Monthly Green Purchases</p>
+            {monthlyData.some(m => m.purchases > 0) ? (
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={monthlyData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis />
+                  <Tooltip
+                    contentStyle={{ background: "#0f1e17", border: "1px solid #166534", borderRadius: 8, fontSize: 12 }}
+                  />
+                  <Legend />
+                  <Bar dataKey="purchases" name="Purchases" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="tokens" name="Tokens" fill="#4ade80" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-48 flex items-center justify-center text-brand-700 text-sm font-mono">
+                No purchase data yet
+              </div>
+            )}
+          </div>
+
+          <div className="glow-card rounded-2xl p-6">
+            <p className="text-brand-400 text-sm font-medium mb-4">Eco Category Distribution</p>
+            {categoryData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={200}>
+                <PieChart>
+                  <Pie data={categoryData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
+                    {categoryData.map((_, index) => (
+                      <Cell key={index} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ background: "#0f1e17", border: "1px solid #166534", borderRadius: 8, fontSize: 12 }}
+                  />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-48 flex items-center justify-center text-brand-700 text-sm font-mono">
+                No category data yet
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Privacy notice */}
+        <div className="bg-surface-700/30 border border-brand-900/40 rounded-xl p-4 flex items-start gap-3">
+          <span className="text-brand-500 text-lg shrink-0">ðŸ”’</span>
+          <p className="text-brand-600 text-xs font-mono leading-relaxed">
+            All data shown is anonymized and aggregated. No individual user information is disclosed.
+            This dashboard complies with data privacy regulations and GDPR standards.
+          </p>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+========== C:\Users\hari1\Downloads\files (2)\components\dashboard\DashboardClient.tsx ==========
+"use client";
+import { useState } from "react";
+import { signOut } from "next-auth/react";
+import {
+  LineChart, Line, BarChart, Bar,
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from "recharts";
+import Link from "next/link";
+
+interface DashboardClientProps {
+  user: { name: string; email: string };
+  wallet: { tokenBalance: number; moneyEquivalent: number };
+  purchases: any[];
+  transactions: any[];
+  carbonSaved: number;
+  streakDays: number;
+  monthlyData: { month: string; tokens: number; carbon: number }[];
+}
+
+const BADGES = [
+  { id: "first", icon: "ðŸŒ±", name: "First Purchase", desc: "Made your first green purchase", threshold: 1 },
+  { id: "tenner", icon: "ðŸŒ¿", name: "Green Tenner", desc: "Earned 10+ tokens", threshold: 10 },
+  { id: "century", icon: "ðŸŒ³", name: "Token Century", desc: "Earned 100+ tokens", threshold: 100 },
+  { id: "streaker", icon: "ðŸ”¥", name: "Green Streak", desc: "7+ day streak", threshold: 7 },
+];
+
+export function DashboardClient({
+  user, wallet, purchases, transactions, carbonSaved, streakDays, monthlyData,
+}: DashboardClientProps) {
+  const [activeTab, setActiveTab] = useState<"overview" | "purchases" | "transactions">("overview");
+
+  const earnedBadges = BADGES.filter(b => {
+    if (b.id === "first") return purchases.length >= b.threshold;
+    if (b.id === "tenner") return wallet.tokenBalance >= b.threshold;
+    if (b.id === "century") return wallet.tokenBalance >= b.threshold;
+    if (b.id === "streaker") return streakDays >= b.threshold;
+    return false;
+  });
+
+  return (
+    <div className="min-h-screen bg-surface-900">
+      {/* Sidebar */}
+      <aside className="fixed top-0 left-0 h-full w-60 border-r border-brand-900/40 bg-surface-800/50 backdrop-blur-xl flex flex-col z-40">
+        <div className="p-6 border-b border-brand-900/40">
+          <Link href="/" className="flex items-center gap-2">
+            <span className="text-2xl">ðŸŒ¿</span>
+            <span className="font-display font-bold text-brand-300">GreenLens</span>
+          </Link>
+        </div>
+
+        <nav className="flex-1 p-4 space-y-1">
+          {[
+            { id: "overview", label: "Overview", icon: "â—Ž" },
+            { id: "purchases", label: "Purchases", icon: "â—ˆ" },
+            { id: "transactions", label: "Transactions", icon: "â—†" },
+          ].map(item => (
+            <button
+              key={item.id}
+              onClick={() => setActiveTab(item.id as any)}
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                activeTab === item.id
+                  ? "bg-brand-500/15 text-brand-300 border border-brand-500/30"
+                  : "text-brand-700 hover:text-brand-400 hover:bg-brand-900/30"
+              }`}
+            >
+              <span className="font-mono text-xs">{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="p-4 border-t border-brand-900/40">
+          <div className="mb-3 px-3">
+            <p className="text-brand-300 text-sm font-medium truncate">{user.name}</p>
+            <p className="text-brand-700 text-xs font-mono truncate">{user.email}</p>
+          </div>
+          <button
+            onClick={() => signOut({ callbackUrl: "/" })}
+            className="w-full text-left px-3 py-2 text-brand-700 text-xs hover:text-red-400 transition-colors font-mono"
+          >
+            â†’ Sign out
+          </button>
+        </div>
+      </aside>
+
+      {/* Main content */}
+      <main className="ml-60 p-8">
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="font-display text-3xl font-bold text-brand-100">
+            Hey, {user.name.split(" ")[0]} ðŸ‘‹
+          </h1>
+          <p className="text-brand-600 text-sm mt-1 font-mono">
+            {new Date().toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+          </p>
+        </div>
+
+        {/* Extension Banner */}
+        <div className="glow-card rounded-xl p-4 mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">ðŸ”Œ</span>
+            <div>
+              <p className="text-brand-200 text-sm font-medium">Install the GreenCart Extension</p>
+              <p className="text-brand-600 text-xs font-mono">Start earning tokens on every Amazon purchase</p>
+            </div>
+          </div>
+          <a
+            href="https://chrome.google.com/webstore"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="gl-btn-primary text-xs py-2 px-4 whitespace-nowrap"
+          >
+            Download Extension
+          </a>
+        </div>
+
+        {activeTab === "overview" && (
+          <div className="space-y-6">
+            {/* Stats cards */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="glow-card rounded-2xl p-6">
+                <p className="text-brand-600 text-xs font-mono uppercase tracking-widest mb-3">Token Balance</p>
+                <p className="font-display text-4xl font-black text-brand-300">{wallet.tokenBalance}</p>
+                <p className="text-brand-600 text-xs mt-1">Green Tokens</p>
+              </div>
+              <div className="glow-card rounded-2xl p-6">
+                <p className="text-brand-600 text-xs font-mono uppercase tracking-widest mb-3">â‚¹ Equivalent</p>
+                <p className="font-display text-4xl font-black text-brand-400">
+                  â‚¹{wallet.moneyEquivalent.toFixed(2)}
+                </p>
+                <p className="text-brand-600 text-xs mt-1">@ â‚¹0.10 per token</p>
+              </div>
+              <div className="glow-card rounded-2xl p-6">
+                <p className="text-brand-600 text-xs font-mono uppercase tracking-widest mb-3">Carbon Saved</p>
+                <p className="font-display text-4xl font-black text-brand-500">
+                  {carbonSaved.toFixed(2)}
+                </p>
+                <p className="text-brand-600 text-xs mt-1">kg COâ‚‚ equivalent</p>
+              </div>
+            </div>
+
+            {/* Streak & Badges */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="glow-card rounded-2xl p-6">
+                <p className="text-brand-600 text-xs font-mono uppercase tracking-widest mb-4">Green Streak</p>
+                <div className="flex items-center gap-3">
+                  <span className="text-3xl">{streakDays >= 7 ? "ðŸ”¥" : "ðŸŒ±"}</span>
+                  <div>
+                    <p className="font-display text-2xl font-bold text-brand-200">{streakDays} days</p>
+                    <div className="flex gap-1 mt-2">
+                      {Array.from({ length: 7 }, (_, i) => (
+                        <div key={i} className={`h-1.5 w-6 rounded-full ${i < Math.min(streakDays, 7) ? "bg-brand-400" : "bg-brand-900"}`} />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="glow-card rounded-2xl p-6">
+                <p className="text-brand-600 text-xs font-mono uppercase tracking-widest mb-4">Badges</p>
+                <div className="flex gap-3 flex-wrap">
+                  {BADGES.map(b => (
+                    <div
+                      key={b.id}
+                      title={`${b.name}: ${b.desc}`}
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl transition-all ${
+                        earnedBadges.includes(b)
+                          ? "bg-brand-500/20 border border-brand-500/40"
+                          : "bg-surface-600 border border-brand-900/50 opacity-30 grayscale"
+                      }`}
+                    >
+                      {b.icon}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Charts */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="glow-card rounded-2xl p-6">
+                <p className="text-brand-400 text-sm font-medium mb-4">Monthly Tokens Earned</p>
+                {monthlyData.some(m => m.tokens > 0) ? (
+                  <ResponsiveContainer width="100%" height={160}>
+                    <BarChart data={monthlyData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="month" />
+                      <YAxis />
+                      <Tooltip
+                        contentStyle={{ background: "#0f1e17", border: "1px solid #166534", borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: "#86efac" }}
+                      />
+                      <Bar dataKey="tokens" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-40 flex items-center justify-center text-brand-700 text-sm font-mono">
+                    No data yet Â· start shopping!
+                  </div>
+                )}
+              </div>
+
+              <div className="glow-card rounded-2xl p-6">
+                <p className="text-brand-400 text-sm font-medium mb-4">Carbon Reduction (kg COâ‚‚)</p>
+                {monthlyData.some(m => m.carbon > 0) ? (
+                  <ResponsiveContainer width="100%" height={160}>
+                    <LineChart data={monthlyData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="month" />
+                      <YAxis />
+                      <Tooltip
+                        contentStyle={{ background: "#0f1e17", border: "1px solid #166534", borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: "#86efac" }}
+                      />
+                      <Line type="monotone" dataKey="carbon" stroke="#4ade80" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-40 flex items-center justify-center text-brand-700 text-sm font-mono">
+                    No data yet
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === "purchases" && (
+          <div className="glow-card rounded-2xl overflow-hidden">
+            <div className="p-6 border-b border-brand-900/40">
+              <h2 className="font-display font-bold text-brand-200">Purchase History</h2>
+              <p className="text-brand-600 text-xs font-mono mt-1">{purchases.length} total purchases</p>
+            </div>
+            {purchases.length === 0 ? (
+              <div className="p-12 text-center text-brand-700 font-mono text-sm">
+                No purchases yet Â· Install the extension and start shopping!
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-brand-900/40">
+                      {["Product", "Price", "Eco Score", "Tokens", "Date"].map(h => (
+                        <th key={h} className="text-left px-6 py-3 text-brand-600 text-xs font-mono uppercase tracking-widest">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchases.map(p => (
+                      <tr key={p.id} className="border-b border-brand-900/20 hover:bg-brand-900/10 transition-colors">
+                        <td className="px-6 py-4 text-brand-200 text-sm max-w-xs truncate">{p.productName}</td>
+                        <td className="px-6 py-4 text-brand-400 text-sm font-mono">â‚¹{p.price}</td>
+                        <td className="px-6 py-4">
+                          <span className={`gl-badge text-xs ${
+                            p.sustainabilityScore >= 80 ? "bg-brand-500/20 text-brand-300 border border-brand-500/30" :
+                            p.sustainabilityScore >= 60 ? "bg-brand-700/20 text-brand-500 border border-brand-700/30" :
+                            "bg-surface-600 text-brand-700 border border-brand-900/30"
+                          }`}>
+                            {p.sustainabilityScore}/100
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-brand-400 font-mono text-sm">+{p.tokensEarned}</td>
+                        <td className="px-6 py-4 text-brand-700 text-xs font-mono">
+                          {new Date(p.purchaseDate).toLocaleDateString("en-IN")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "transactions" && (
+          <div className="glow-card rounded-2xl overflow-hidden">
+            <div className="p-6 border-b border-brand-900/40">
+              <h2 className="font-display font-bold text-brand-200">Transaction History</h2>
+            </div>
+            {transactions.length === 0 ? (
+              <div className="p-12 text-center text-brand-700 font-mono text-sm">
+                No transactions yet
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-brand-900/40">
+                      {["Type", "Description", "Tokens", "Value", "Date"].map(h => (
+                        <th key={h} className="text-left px-6 py-3 text-brand-600 text-xs font-mono uppercase tracking-widest">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transactions.map(t => (
+                      <tr key={t.id} className="border-b border-brand-900/20 hover:bg-brand-900/10 transition-colors">
+                        <td className="px-6 py-4">
+                          <span className={`gl-badge text-xs ${
+                            t.type === "EARN" ? "bg-brand-500/20 text-brand-300 border border-brand-500/30" :
+                            t.type === "BONUS" ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30" :
+                            "bg-red-500/20 text-red-300 border border-red-500/30"
+                          }`}>
+                            {t.type}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-brand-300 text-sm">{t.description}</td>
+                        <td className="px-6 py-4 text-brand-400 font-mono text-sm">
+                          {t.type === "REDEEM" ? "-" : "+"}{t.tokens}
+                        </td>
+                        <td className="px-6 py-4 text-brand-400 font-mono text-sm">â‚¹{t.moneyValue.toFixed(2)}</td>
+                        <td className="px-6 py-4 text-brand-700 text-xs font-mono">
+                          {new Date(t.timestamp).toLocaleDateString("en-IN")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+========== C:\Users\hari1\Downloads\files (2)\lib\prisma.ts ==========
+import { PrismaClient } from "@prisma/client";
+
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+};
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
+  });
+
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+
+========== C:\Users\hari1\Downloads\files (2)\lib\tokens.ts ==========
+export const TOKEN_RATE = 0.1; // 1 token = â‚¹0.10
+
+export function calcTokens(score: number): number {
+  if (score >= 80) return 20;
+  if (score >= 60) return 12;
+  if (score >= 40) return 5;
+  return 0;
+}
+
+export function tokensToMoney(tokens: number): number {
+  return tokens * TOKEN_RATE;
+}
+
+export function carbonFromScore(score: number, price: number): number {
+  // Simple estimate: higher score = less carbon per â‚¹ spent
+  const factor = score / 100;
+  return parseFloat((price * 0.002 * factor).toFixed(3));
+}
+
+========== C:\Users\hari1\Downloads\files (2)\middleware.ts ==========
+import { NextRequest, NextResponse } from "next/server";
+import { getToken } from "next-auth/jwt";
+
+export async function middleware(req: NextRequest) {
+  // ✅ Fix: use AUTH_SECRET only — this is what NextAuth v5 uses to sign the JWT.
+  // Having NEXTAUTH_SECRET set to a different value caused getToken() to return null
+  // even when a valid session existed, causing the dashboard → login redirect loop.
+  const token = await getToken({
+    req,
+    secret: process.env.AUTH_SECRET,
+  });
+
+  const { pathname } = req.nextUrl;
+  const isLoggedIn = !!token;
+  const userRole = (token as any)?.role;
+
+  if (pathname.startsWith("/dashboard")) {
+    if (!isLoggedIn) return NextResponse.redirect(new URL("/login", req.url));
+    if (userRole === "CORPORATE")
+      return NextResponse.redirect(new URL("/corporate", req.url));
+  }
+
+  if (pathname.startsWith("/corporate")) {
+    if (!isLoggedIn) return NextResponse.redirect(new URL("/login", req.url));
+    if (userRole !== "CORPORATE")
+      return NextResponse.redirect(new URL("/dashboard", req.url));
+  }
+
+  if (isLoggedIn && (pathname === "/login" || pathname === "/register")) {
+    return NextResponse.redirect(
+      new URL(userRole === "CORPORATE" ? "/corporate" : "/dashboard", req.url)
+    );
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/dashboard/:path*", "/corporate/:path*", "/login", "/register"],
+};
+
+========== C:\Users\hari1\Downloads\files (2)\next-env.d.ts ==========
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/building-your-application/configuring/typescript for more information.
+
+========== C:\Users\hari1\Downloads\files (2)\prisma\seed.ts ==========
+import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
+
+const prisma = new PrismaClient();
+
+async function main() {
+  console.log("ðŸŒ± Seeding database...");
+
+  // Demo user
+  const userHash = await bcrypt.hash("password123", 12);
+  const user = await prisma.user.upsert({
+    where: { email: "demo@greenlens.app" },
+    update: {},
+    create: {
+      name: "Demo User",
+      email: "demo@greenlens.app",
+      passwordHash: userHash,
+      role: "USER",
+    },
+  });
+
+  // Create wallet
+  await prisma.wallet.upsert({
+    where: { userId: user.id },
+    update: {},
+    create: { userId: user.id, tokenBalance: 157, moneyEquivalent: 15.7 },
+  });
+
+  // Sample purchases
+  const samplePurchases = [
+    { productName: "Organic India Tulsi Green Tea 100 Bags", price: 299, sustainabilityScore: 92, tokensEarned: 20 },
+    { productName: "Bamboo Toothbrush Set Pack of 4", price: 349, sustainabilityScore: 88, tokensEarned: 20 },
+    { productName: "Khadi Natural Herbal Shampoo 200ml", price: 245, sustainabilityScore: 85, tokensEarned: 20 },
+    { productName: "Recycled Cotton Tote Bag Organic", price: 199, sustainabilityScore: 78, tokensEarned: 12 },
+    { productName: "Solar LED Garden Lights Set", price: 599, sustainabilityScore: 89, tokensEarned: 20 },
+    { productName: "Compostable Garbage Bags 30L", price: 279, sustainabilityScore: 87, tokensEarned: 20 },
+    { productName: "Beeswax Food Wraps Reusable Set", price: 449, sustainabilityScore: 90, tokensEarned: 20 },
+    { productName: "Stainless Steel Water Bottle 750ml", price: 399, sustainabilityScore: 86, tokensEarned: 20 },
+  ];
+
+  for (let i = 0; i < samplePurchases.length; i++) {
+    const p = samplePurchases[i];
+    const daysAgo = (i + 1) * 5;
+    await prisma.purchase.create({
+      data: {
+        userId: user.id,
+        ...p,
+        purchaseDate: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+      },
+    }).catch(() => {});
+
+    await prisma.transaction.create({
+      data: {
+        userId: user.id,
+        type: "EARN",
+        tokens: p.tokensEarned,
+        moneyValue: p.tokensEarned * 0.1,
+        description: `Eco purchase: ${p.productName.slice(0, 50)}`,
+        timestamp: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+      },
+    });
+  }
+
+  // Demo corporate user
+  const corpHash = await bcrypt.hash("password123", 12);
+  const corp = await prisma.user.upsert({
+    where: { email: "corp@greenlens.app" },
+    update: {},
+    create: {
+      name: "EcoVentures Ltd",
+      email: "corp@greenlens.app",
+      passwordHash: corpHash,
+      role: "CORPORATE",
+    },
+  });
+
+  await prisma.corporate.upsert({
+    where: { contactEmail: "corp@greenlens.app" },
+    update: {},
+    create: {
+      companyName: "EcoVentures Ltd",
+      contactEmail: "corp@greenlens.app",
+      subscriptionPlan: "pro",
+    },
+  });
+
+  console.log("âœ… Seed complete!");
+  console.log("   Demo user: demo@greenlens.app / password123");
+  console.log("   Corporate: corp@greenlens.app / password123");
+}
+
+main()
+  .catch(console.error)
+  .finally(() => prisma.$disconnect());
+

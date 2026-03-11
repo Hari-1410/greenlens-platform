@@ -1,8 +1,7 @@
 ﻿/** @type {import('next').NextConfig} */
 const nextConfig = {
-  serverExternalPackages: ["@prisma/client", "bcryptjs"],
-  output: "standalone",
   experimental: {
+    serverComponentsExternalPackages: ["@prisma/client", "bcryptjs"],
     missingSuspenseWithCSRBailout: false,
   },
 };

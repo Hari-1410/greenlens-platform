@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { signIn } from "next-auth/react";
+import { signIn, getSession } from "next-auth/react"; // ✅ added getSession
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -28,28 +28,43 @@ export default function LoginPage() {
       return;
     }
 
-    // Fetch session to determine role
-    const session = await fetch("/api/user").then(r => r.json());
-    if (session?.role === "CORPORATE") {
-      router.push("/corporate");
+    // ✅ Fix: hard redirect via window.location instead of router.push()
+    // router.push() does a soft navigation — middleware intercepts it before
+    // the JWT cookie is fully committed, causing the loop back to /login.
+    // window.location.href forces a full page reload so middleware reads
+    // the fresh cookie correctly on the next request.
+    const session = await getSession();
+    const role = (session?.user as any)?.role;
+
+    if (role === "CORPORATE") {
+      window.location.href = "/corporate";
     } else {
-      router.push("/dashboard");
+      window.location.href = "/dashboard";
     }
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 relative">
-      <div className="absolute inset-0 pointer-events-none"
-        style={{ background: "radial-gradient(circle at 50% 30%, rgba(34,197,94,0.05) 0%, transparent 60%)" }} />
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(circle at 50% 30%, rgba(34,197,94,0.05) 0%, transparent 60%)",
+        }}
+      />
 
       <div className="w-full max-w-md relative">
         {/* Logo */}
         <div className="text-center mb-8">
           <Link href="/" className="inline-flex items-center gap-2 mb-6">
             <span className="text-3xl">🌿</span>
-            <span className="font-display font-bold text-xl text-brand-300">GreenLens</span>
+            <span className="font-display font-bold text-xl text-brand-300">
+              GreenLens
+            </span>
           </Link>
-          <h1 className="font-display text-2xl font-bold text-brand-100">Welcome back</h1>
+          <h1 className="font-display text-2xl font-bold text-brand-100">
+            Welcome back
+          </h1>
           <p className="text-brand-600 text-sm mt-1">Sign in to your account</p>
         </div>
 
@@ -64,7 +79,7 @@ export default function LoginPage() {
                 className="gl-input"
                 placeholder="you@example.com"
                 value={form.email}
-                onChange={e => setForm({ ...form, email: e.target.value })}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
                 required
               />
             </div>
@@ -78,7 +93,7 @@ export default function LoginPage() {
                 className="gl-input"
                 placeholder="••••••••"
                 value={form.password}
-                onChange={e => setForm({ ...form, password: e.target.value })}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
                 required
               />
             </div>
@@ -89,15 +104,22 @@ export default function LoginPage() {
               </div>
             )}
 
-            <button type="submit" className="gl-btn-primary w-full py-3" disabled={loading}>
+            <button
+              type="submit"
+              className="gl-btn-primary w-full py-3"
+              disabled={loading}
+            >
               {loading ? "Signing in…" : "Sign In →"}
             </button>
           </form>
 
           <div className="mt-6 text-center">
             <p className="text-brand-700 text-sm">
-              Don't have an account?{" "}
-              <Link href="/register" className="text-brand-400 hover:text-brand-300 transition-colors font-medium">
+              Don&apos;t have an account?{" "}
+              <Link
+                href="/register"
+                className="text-brand-400 hover:text-brand-300 transition-colors font-medium"
+              >
                 Create one
               </Link>
             </p>
