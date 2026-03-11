@@ -7,6 +7,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const wallet = await prisma.wallet.findUnique({ where: { userId: (session.user as any).id } });
+  const wallet = await prisma.wallet.findUnique({
+    where: { userId: (session.user as any).id },
+  });
   return NextResponse.json(wallet ?? { tokenBalance: 0, moneyEquivalent: 0 });
 }

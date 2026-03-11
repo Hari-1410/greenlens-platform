@@ -30,10 +30,18 @@ export async function POST(req: NextRequest) {
     }
     const tokens = data.tokensEarned ?? calcTokens(data.sustainabilityScore);
     const moneyValue = tokensToMoney(tokens);
-    const [purchase] = await prisma.([
-      prisma.purchase.create({ data: { userId, productName: data.productName, price: data.price, sustainabilityScore: data.sustainabilityScore, tokensEarned: tokens, externalId: data.externalId } }),
-      prisma.wallet.upsert({ where: { userId }, update: { tokenBalance: { increment: tokens }, moneyEquivalent: { increment: moneyValue }, lastUpdated: new Date() }, create: { userId, tokenBalance: tokens, moneyEquivalent: moneyValue } }),
-      prisma.transaction.create({ data: { userId, type: "EARN", tokens, moneyValue, description: Eco purchase:  } }),
+    const [purchase] = await prisma.$transaction([
+      prisma.purchase.create({
+        data: { userId, productName: data.productName, price: data.price, sustainabilityScore: data.sustainabilityScore, tokensEarned: tokens, externalId: data.externalId },
+      }),
+      prisma.wallet.upsert({
+        where: { userId },
+        update: { tokenBalance: { increment: tokens }, moneyEquivalent: { increment: moneyValue }, lastUpdated: new Date() },
+        create: { userId, tokenBalance: tokens, moneyEquivalent: moneyValue },
+      }),
+      prisma.transaction.create({
+        data: { userId, type: "EARN", tokens, moneyValue, description: `Eco purchase: ${data.productName.slice(0, 50)}` },
+      }),
     ]);
     return NextResponse.json({ success: true, tokensEarned: tokens, moneyValue, purchase });
   } catch (err: any) {
@@ -46,6 +54,10 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const purchases = await prisma.purchase.findMany({ where: { userId: (session.user as any).id }, orderBy: { purchaseDate: "desc" }, take: 50 });
+  const purchases = await prisma.purchase.findMany({
+    where: { userId: (session.user as any).id },
+    orderBy: { purchaseDate: "desc" },
+    take: 50,
+  });
   return NextResponse.json(purchases);
 }

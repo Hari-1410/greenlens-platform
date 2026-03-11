@@ -19,7 +19,9 @@ export async function POST(req: NextRequest) {
     const existing = await prisma.user.findUnique({ where: { email: data.email } });
     if (existing) return NextResponse.json({ error: "Email already registered" }, { status: 409 });
     const passwordHash = await bcrypt.hash(data.password, 12);
-    const user = await prisma.user.create({ data: { name: data.name, email: data.email, passwordHash, role: data.role } });
+    const user = await prisma.user.create({
+      data: { name: data.name, email: data.email, passwordHash, role: data.role },
+    });
     if (data.role === "USER") await prisma.wallet.create({ data: { userId: user.id, tokenBalance: 0, moneyEquivalent: 0 } });
     if (data.role === "CORPORATE") await prisma.corporate.create({ data: { companyName: data.name, contactEmail: data.email } });
     return NextResponse.json({ message: "Account created", userId: user.id }, { status: 201 });
