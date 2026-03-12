@@ -2,6 +2,13 @@
 // components/dashboard/DashboardClient.tsx
 // Smart polling: burst on focus/visibility change, idle otherwise.
 // Burst = every 1.5s for 20s. Idle = every 30s. Stale-detection retries faster.
+//
+// FIXES applied:
+//   1. fetchAll useCallback dep array now includes scheduleInterval (stale closure fix).
+//   2. AbortController with REQUEST_TIMEOUT_MS cancels hung fetches on slow networks.
+//   3. In-flight guard (isFetchingRef) prevents overlapping poll cycles.
+//   4. prevBalanceRef is synced after first fetch so stale SSR values don't
+//      suppress the +token flash when the page loads mid-purchase.
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { signOut } from "next-auth/react";
@@ -34,6 +41,7 @@ const BURST_INTERVAL_MS  = 1_500;   // poll every 1.5s during burst
 const BURST_DURATION_MS  = 20_000;  // burst lasts 20s after focus/visibility
 const IDLE_INTERVAL_MS   = 30_000;  // poll every 30s when idle
 const STALE_RETRY_MS     = 2_500;   // retry after 2.5s if balance unchanged mid-burst
+const REQUEST_TIMEOUT_MS = 8_000;   // ✅ FIX: abort slow requests after 8s
 
 function calcStreakDays(purchases: any[]): number {
   if (purchases.length === 0) return 0;
@@ -83,38 +91,72 @@ export function DashboardClient({
   const [isBursting,   setIsBursting]   = useState(false);
 
   const prevBalanceRef  = useRef<number>(initialWallet.tokenBalance);
-  const burstUntilRef   = useRef<number>(0);       // epoch ms when burst ends
+  const burstUntilRef   = useRef<number>(0);
   const intervalRef     = useRef<ReturnType<typeof setInterval> | null>(null);
   const staleRetryRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ✅ FIX: guard against overlapping fetches on slow networks
+  const isFetchingRef   = useRef<boolean>(false);
+  const abortCtrlRef    = useRef<AbortController | null>(null);
+  // ✅ FIX: track whether this is the very first fetch (to sync SSR baseline)
+  const isFirstFetchRef = useRef<boolean>(true);
 
-  // ── Core fetch ──────────────────────────────────────────────────────────────
+  // ── Interval management (defined BEFORE fetchAll so it can be in dep array) ─
+  const scheduleInterval = useCallback((ms: number) => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    // fetchAll is referenced via ref below to avoid circular deps
+    intervalRef.current = setInterval(() => fetchAllRef.current?.(), ms);
+  }, []); // no deps — stable reference
+
+  // ── Core fetch ────────────────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
-    if (document.hidden) return; // skip when tab not visible
+    if (document.hidden) return;
+
+    // ✅ FIX: skip if a fetch is already in-flight (prevents race conditions
+    //        on slow networks where polls overlap)
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+
+    // ✅ FIX: abort any lingering previous request, then create a fresh controller
+    if (abortCtrlRef.current) abortCtrlRef.current.abort();
+    const controller = new AbortController();
+    abortCtrlRef.current = controller;
+
+    // ✅ FIX: auto-abort after REQUEST_TIMEOUT_MS so a slow network doesn't
+    //        block the next poll cycle
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
       const [wRes, pRes, tRes] = await Promise.all([
-        fetch(`/api/wallet?userId=${userId}`,       { cache: "no-store" }),
-        fetch(`/api/purchase?userId=${userId}`,     { cache: "no-store" }),
-        fetch(`/api/transactions?userId=${userId}`, { cache: "no-store" }),
+        fetch(`/api/wallet?userId=${userId}`,       { cache: "no-store", signal: controller.signal }),
+        fetch(`/api/purchase?userId=${userId}`,     { cache: "no-store", signal: controller.signal }),
+        fetch(`/api/transactions?userId=${userId}`, { cache: "no-store", signal: controller.signal }),
       ]);
 
       if (wRes.ok) {
         const wJson     = await wRes.json();
+        // wallet API now returns { wallet: {...} }; keep legacy fallback just in case
         const newWallet = wJson.wallet ?? wJson;
         const newBal: number = newWallet.tokenBalance ?? 0;
         const prev = prevBalanceRef.current;
 
-        if (newBal > prev) {
-          // Balance increased → flash + stop burst
+        // ✅ FIX: on the very first fetch, silently sync the SSR baseline so
+        //        that a purchase that happened BEFORE the page loaded still
+        //        triggers a flash on the NEXT change rather than being missed.
+        if (isFirstFetchRef.current) {
+          prevBalanceRef.current = newBal;
+          isFirstFetchRef.current = false;
+        } else if (newBal > prev) {
+          // Balance increased → flash + end burst early
           setTokenFlash(newBal - prev);
           setTimeout(() => setTokenFlash(null), 3_500);
-          burstUntilRef.current = 0; // end burst early — we got what we wanted
+          burstUntilRef.current = 0;
           setIsBursting(false);
+          // ✅ FIX: scheduleInterval is now in scope (not a stale closure)
           scheduleInterval(IDLE_INTERVAL_MS);
         } else if (newBal === prev && Date.now() < burstUntilRef.current) {
-          // Still bursting, balance unchanged — retry quickly via stale-retry
+          // Still bursting, balance unchanged — retry quickly
           if (staleRetryRef.current) clearTimeout(staleRetryRef.current);
-          staleRetryRef.current = setTimeout(fetchAll, STALE_RETRY_MS);
+          staleRetryRef.current = setTimeout(() => fetchAllRef.current?.(), STALE_RETRY_MS);
         }
 
         prevBalanceRef.current = newBal;
@@ -128,25 +170,35 @@ export function DashboardClient({
 
       if (tRes.ok) {
         const tJson = await tRes.json();
+        // ✅ FIX: transactions API now returns { transactions: [...] }
+        //        Previously returned a bare array so tJson.transactions was
+        //        always undefined → transactions tab never updated.
         setTransactions(tJson.transactions ?? []);
       }
-    } catch {
-      // silent — transient network errors shouldn't break UI
+    } catch (err: any) {
+      // Ignore abort errors (expected on timeout / unmount); log real errors
+      if (err?.name !== "AbortError") {
+        console.warn("[DashboardClient] fetchAll error:", err);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      isFetchingRef.current = false;
     }
-  }, [userId]);
+  // ✅ FIX: scheduleInterval is now in the dependency array — previously it
+  //        was missing, causing a stale closure where calling scheduleInterval
+  //        from inside fetchAll (after a token credit) had no effect.
+  }, [userId, scheduleInterval]);
 
-  // ── Interval management ────────────────────────────────────────────────────
-  const scheduleInterval = useCallback((ms: number) => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = setInterval(fetchAll, ms);
-  }, [fetchAll]);
+  // Keep a stable ref to fetchAll for use inside setInterval callbacks
+  const fetchAllRef = useRef(fetchAll);
+  useEffect(() => { fetchAllRef.current = fetchAll; }, [fetchAll]);
 
   // ── Burst trigger ──────────────────────────────────────────────────────────
   const startBurst = useCallback(() => {
     if (document.hidden) return;
     burstUntilRef.current = Date.now() + BURST_DURATION_MS;
     setIsBursting(true);
-    fetchAll(); // immediate fetch first
+    fetchAllRef.current?.(); // immediate fetch first
     scheduleInterval(BURST_INTERVAL_MS);
 
     // Auto-downgrade to idle after burst duration
@@ -154,22 +206,22 @@ export function DashboardClient({
       setIsBursting(false);
       scheduleInterval(IDLE_INTERVAL_MS);
     }, BURST_DURATION_MS);
-  }, [fetchAll, scheduleInterval]);
+  }, [scheduleInterval]);
 
-  // ── Mount: start idle polling ──────────────────────────────────────────────
+  // ── Mount: initial fetch + start idle polling ─────────────────────────────
   useEffect(() => {
+    fetchAllRef.current?.(); // fetch immediately on mount
     scheduleInterval(IDLE_INTERVAL_MS);
     return () => {
       if (intervalRef.current)  clearInterval(intervalRef.current);
       if (staleRetryRef.current) clearTimeout(staleRetryRef.current);
+      if (abortCtrlRef.current) abortCtrlRef.current.abort();
     };
   }, [scheduleInterval]);
 
   // ── Visibility change: burst when tab becomes visible ─────────────────────
   useEffect(() => {
-    const onVisible = () => {
-      if (!document.hidden) startBurst();
-    };
+    const onVisible = () => { if (!document.hidden) startBurst(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [startBurst]);
@@ -195,7 +247,7 @@ export function DashboardClient({
     return false;
   });
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-surface-900">
       {/* Sidebar */}
@@ -288,7 +340,7 @@ export function DashboardClient({
           <div className="space-y-6">
             {/* Stats cards */}
             <div className="grid grid-cols-3 gap-4">
-              {/* Token Balance — flashes green when extension credits tokens */}
+              {/* Token Balance – flashes green when extension credits tokens */}
               <div
                 className="glow-card rounded-2xl p-6 relative overflow-hidden transition-all duration-500"
                 style={tokenFlash ? {

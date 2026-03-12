@@ -1683,7 +1683,6 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
     const doc = new jsPDF();
     const now = new Date();
 
-    // Header
     doc.setFillColor(5, 10, 6);
     doc.rect(0, 0, 210, 297, "F");
     doc.setTextColor(34, 197, 94);
@@ -1698,12 +1697,10 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
     doc.text(`Report Date: ${now.toLocaleDateString("en-IN")}`, 20, 55);
     doc.text(`Generated: ${now.toLocaleString("en-IN")}`, 20, 65);
 
-    // Divider
     doc.setDrawColor(34, 197, 94);
     doc.setLineWidth(0.5);
     doc.line(20, 72, 190, 72);
 
-    // Key metrics
     doc.setTextColor(34, 197, 94);
     doc.setFontSize(14);
     doc.setFont("helvetica", "bold");
@@ -1715,16 +1712,15 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
       body: [
         ["Total Green Shoppers", stats.totalUsers.toLocaleString()],
         ["Total Sustainable Purchases", stats.totalGreenPurchases.toLocaleString()],
-        ["Green Tokens Distributed", stats.totalTokens.toLocaleString()],
+        ["Green Tokens Distributed to Users", stats.totalTokens.toLocaleString()],
         ["Estimated Carbon Saved (kg COâ‚‚)", stats.carbonSaved.toFixed(2)],
-        ["Monetary Value Returned (â‚¹)", (stats.totalTokens * 0.1).toFixed(2)],
+        ["Monetary Value Returned to Users (â‚¹)", (stats.totalTokens * 0.1).toFixed(2)],
       ],
       styles: { fillColor: [14, 30, 20], textColor: [134, 239, 172], fontSize: 10 },
       headStyles: { fillColor: [22, 101, 52], textColor: [134, 239, 172] },
       alternateRowStyles: { fillColor: [10, 20, 16] },
     });
 
-    // Category breakdown
     if (categoryData.length > 0) {
       const afterTable = (doc as any).lastAutoTable.finalY + 15;
       doc.setTextColor(34, 197, 94);
@@ -1742,7 +1738,6 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
       });
     }
 
-    // Footer
     doc.setTextColor(30, 58, 43);
     doc.setFontSize(8);
     doc.text("This report contains anonymized aggregate data. Individual user data is not disclosed.", 20, 285);
@@ -1804,13 +1799,36 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
           </button>
         </div>
 
-        {/* Stats */}
+        {/* â”€â”€ Token wallet â€” grayed out, corporate accounts don't earn tokens â”€â”€ */}
+        <div className="glow-card rounded-2xl p-5 mb-6 opacity-50 pointer-events-none select-none relative overflow-hidden">
+          {/* Lock overlay badge */}
+          <div className="absolute top-3 right-4 flex items-center gap-1.5 bg-surface-600 border border-brand-900/60 rounded-full px-3 py-1">
+            <span className="text-xs">ðŸ”’</span>
+            <span className="text-brand-700 text-xs font-mono">User accounts only</span>
+          </div>
+          <p className="text-brand-600 text-xs font-mono uppercase tracking-widest mb-3">Token Wallet</p>
+          <div className="flex items-end gap-6">
+            <div>
+              <p className="font-display text-4xl font-black text-brand-300">â€”</p>
+              <p className="text-brand-700 text-xs mt-1">Token Balance</p>
+            </div>
+            <div>
+              <p className="font-display text-4xl font-black text-brand-400">â€”</p>
+              <p className="text-brand-700 text-xs mt-1">â‚¹ Equivalent</p>
+            </div>
+          </div>
+          <p className="text-brand-800 text-xs font-mono mt-3">
+            Green Tokens are earned by individual users on eco purchases. Corporate accounts track ESG metrics only.
+          </p>
+        </div>
+
+        {/* ESG Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[
-            { label: "Green Shoppers", value: stats.totalUsers.toLocaleString(), icon: "ðŸ‘¥", color: "brand-300" },
-            { label: "Eco Purchases", value: stats.totalGreenPurchases.toLocaleString(), icon: "ðŸ›’", color: "brand-400" },
-            { label: "Tokens Distributed", value: stats.totalTokens.toLocaleString(), icon: "ðŸª™", color: "brand-500" },
-            { label: "Carbon Saved (kg)", value: stats.carbonSaved.toFixed(1), icon: "ðŸŒ", color: "brand-400" },
+            { label: "Green Shoppers",    value: stats.totalUsers.toLocaleString(),           icon: "ðŸ‘¥", color: "brand-300" },
+            { label: "Eco Purchases",     value: stats.totalGreenPurchases.toLocaleString(),  icon: "ðŸ›’", color: "brand-400" },
+            { label: "Tokens to Users",   value: stats.totalTokens.toLocaleString(),          icon: "ðŸª™", color: "brand-500" },
+            { label: "Carbon Saved (kg)", value: stats.carbonSaved.toFixed(1),                icon: "ðŸŒ", color: "brand-400" },
           ].map(s => (
             <div key={s.label} className="glow-card rounded-2xl p-5">
               <div className="flex items-center gap-2 mb-3">
@@ -1822,7 +1840,7 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
           ))}
         </div>
 
-        {/* Monetary return */}
+        {/* Monetary return to users */}
         <div className="glow-card rounded-xl p-4 mb-6 flex items-center gap-4 border-brand-500/20">
           <span className="text-2xl">ðŸ’°</span>
           <div>
@@ -1849,7 +1867,7 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
                   />
                   <Legend />
                   <Bar dataKey="purchases" name="Purchases" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="tokens" name="Tokens" fill="#4ade80" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="tokens"    name="Tokens"    fill="#4ade80" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -2429,9 +2447,19 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 ========== C:\Users\hari1\Downloads\files (2)\lib\tokens.ts ==========
 export const TOKEN_RATE = 0.1; // 1 token = â‚¹0.10
 
+/**
+ * Maps eco sustainability score to token reward.
+ * Finer-grained tiers so tokens feel earned, not flat.
+ *   90â€“100 â†’ 20  (top-tier certified)
+ *   80â€“89  â†’ 15  (high eco score)
+ *   60â€“79  â†’ 10  (mid-range eco)
+ *   40â€“59  â†’  5  (borderline eco)
+ *   < 40   â†’  0  (not eco)
+ */
 export function calcTokens(score: number): number {
-  if (score >= 80) return 20;
-  if (score >= 60) return 12;
+  if (score >= 90) return 20;
+  if (score >= 80) return 15;
+  if (score >= 60) return 10;
   if (score >= 40) return 5;
   return 0;
 }
@@ -2441,7 +2469,6 @@ export function tokensToMoney(tokens: number): number {
 }
 
 export function carbonFromScore(score: number, price: number): number {
-  // Simple estimate: higher score = less carbon per â‚¹ spent
   const factor = score / 100;
   return parseFloat((price * 0.002 * factor).toFixed(3));
 }
@@ -5622,6 +5649,15 @@ import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
 
+// Must match lib/tokens.ts calcTokens exactly
+function calcTokens(score: number): number {
+  if (score >= 90) return 20;
+  if (score >= 80) return 15;
+  if (score >= 60) return 10;
+  if (score >= 40) return 5;
+  return 0;
+}
+
 async function main() {
   console.log("ðŸŒ± Seeding database...");
 
@@ -5638,28 +5674,31 @@ async function main() {
     },
   });
 
-  // Create wallet
-  await prisma.wallet.upsert({
-    where: { userId: user.id },
-    update: {},
-    create: { userId: user.id, tokenBalance: 157, moneyEquivalent: 15.7 },
-  });
-
-  // Sample purchases
+  // Sample purchases â€” scores now spread across tiers so tokens vary realistically
   const samplePurchases = [
-    { productName: "Organic India Tulsi Green Tea 100 Bags", price: 299, sustainabilityScore: 92, tokensEarned: 20 },
-    { productName: "Bamboo Toothbrush Set Pack of 4", price: 349, sustainabilityScore: 88, tokensEarned: 20 },
-    { productName: "Khadi Natural Herbal Shampoo 200ml", price: 245, sustainabilityScore: 85, tokensEarned: 20 },
-    { productName: "Recycled Cotton Tote Bag Organic", price: 199, sustainabilityScore: 78, tokensEarned: 12 },
-    { productName: "Solar LED Garden Lights Set", price: 599, sustainabilityScore: 89, tokensEarned: 20 },
-    { productName: "Compostable Garbage Bags 30L", price: 279, sustainabilityScore: 87, tokensEarned: 20 },
-    { productName: "Beeswax Food Wraps Reusable Set", price: 449, sustainabilityScore: 90, tokensEarned: 20 },
-    { productName: "Stainless Steel Water Bottle 750ml", price: 399, sustainabilityScore: 86, tokensEarned: 20 },
-  ];
+    { productName: "Organic India Tulsi Green Tea 100 Bags",   price: 299, sustainabilityScore: 94 }, // 20 tokens
+    { productName: "Bamboo Toothbrush Set Pack of 4",          price: 349, sustainabilityScore: 87 }, // 15 tokens
+    { productName: "Khadi Natural Herbal Shampoo 200ml",       price: 245, sustainabilityScore: 82 }, // 15 tokens
+    { productName: "Recycled Cotton Tote Bag Organic",         price: 199, sustainabilityScore: 74 }, // 10 tokens
+    { productName: "Solar LED Garden Lights Set",              price: 599, sustainabilityScore: 91 }, // 20 tokens
+    { productName: "Compostable Garbage Bags 30L",             price: 279, sustainabilityScore: 67 }, // 10 tokens
+    { productName: "Beeswax Food Wraps Reusable Set",          price: 449, sustainabilityScore: 83 }, // 15 tokens
+    { productName: "Stainless Steel Water Bottle 750ml",       price: 399, sustainabilityScore: 78 }, // 10 tokens
+    { productName: "Jute Shopping Bag Natural Fiber",          price: 149, sustainabilityScore: 62 }, // 10 tokens
+    { productName: "Recycled Paper Notebook Set of 3",         price: 259, sustainabilityScore: 55 }, //  5 tokens
+  ].map(p => ({ ...p, tokensEarned: calcTokens(p.sustainabilityScore) }));
+
+  const totalSeededTokens = samplePurchases.reduce((s, p) => s + p.tokensEarned, 0);
+
+  await prisma.wallet.upsert({
+    where:  { userId: user.id },
+    update: {},
+    create: { userId: user.id, tokenBalance: totalSeededTokens, moneyEquivalent: totalSeededTokens * 0.1 },
+  });
 
   for (let i = 0; i < samplePurchases.length; i++) {
     const p = samplePurchases[i];
-    const daysAgo = (i + 1) * 5;
+    const daysAgo = (i + 1) * 4;
     await prisma.purchase.create({
       data: {
         userId: user.id,
@@ -5671,11 +5710,11 @@ async function main() {
     await prisma.transaction.create({
       data: {
         userId: user.id,
-        type: "EARN",
-        tokens: p.tokensEarned,
-        moneyValue: p.tokensEarned * 0.1,
+        type:        "EARN",
+        tokens:      p.tokensEarned,
+        moneyValue:  p.tokensEarned * 0.1,
         description: `Eco purchase: ${p.productName.slice(0, 50)}`,
-        timestamp: new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
+        timestamp:   new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000),
       },
     });
   }
@@ -5694,16 +5733,17 @@ async function main() {
   });
 
   await prisma.corporate.upsert({
-    where: { contactEmail: "corp@greenlens.app" },
+    where:  { contactEmail: "corp@greenlens.app" },
     update: {},
     create: {
-      companyName: "EcoVentures Ltd",
-      contactEmail: "corp@greenlens.app",
+      companyName:      "EcoVentures Ltd",
+      contactEmail:     "corp@greenlens.app",
       subscriptionPlan: "pro",
     },
   });
 
   console.log("âœ… Seed complete!");
+  console.log(`   Seeded ${samplePurchases.length} purchases, ${totalSeededTokens} total tokens`);
   console.log("   Demo user: demo@greenlens.app / password123");
   console.log("   Corporate: corp@greenlens.app / password123");
 }
