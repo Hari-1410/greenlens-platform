@@ -27,7 +27,6 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
     const doc = new jsPDF();
     const now = new Date();
 
-    // Header
     doc.setFillColor(5, 10, 6);
     doc.rect(0, 0, 210, 297, "F");
     doc.setTextColor(34, 197, 94);
@@ -42,12 +41,10 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
     doc.text(`Report Date: ${now.toLocaleDateString("en-IN")}`, 20, 55);
     doc.text(`Generated: ${now.toLocaleString("en-IN")}`, 20, 65);
 
-    // Divider
     doc.setDrawColor(34, 197, 94);
     doc.setLineWidth(0.5);
     doc.line(20, 72, 190, 72);
 
-    // Key metrics
     doc.setTextColor(34, 197, 94);
     doc.setFontSize(14);
     doc.setFont("helvetica", "bold");
@@ -59,16 +56,15 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
       body: [
         ["Total Green Shoppers", stats.totalUsers.toLocaleString()],
         ["Total Sustainable Purchases", stats.totalGreenPurchases.toLocaleString()],
-        ["Green Tokens Distributed", stats.totalTokens.toLocaleString()],
+        ["Green Tokens Distributed to Users", stats.totalTokens.toLocaleString()],
         ["Estimated Carbon Saved (kg CO₂)", stats.carbonSaved.toFixed(2)],
-        ["Monetary Value Returned (₹)", (stats.totalTokens * 0.1).toFixed(2)],
+        ["Monetary Value Returned to Users (₹)", (stats.totalTokens * 0.1).toFixed(2)],
       ],
       styles: { fillColor: [14, 30, 20], textColor: [134, 239, 172], fontSize: 10 },
       headStyles: { fillColor: [22, 101, 52], textColor: [134, 239, 172] },
       alternateRowStyles: { fillColor: [10, 20, 16] },
     });
 
-    // Category breakdown
     if (categoryData.length > 0) {
       const afterTable = (doc as any).lastAutoTable.finalY + 15;
       doc.setTextColor(34, 197, 94);
@@ -86,7 +82,6 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
       });
     }
 
-    // Footer
     doc.setTextColor(30, 58, 43);
     doc.setFontSize(8);
     doc.text("This report contains anonymized aggregate data. Individual user data is not disclosed.", 20, 285);
@@ -148,13 +143,36 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
           </button>
         </div>
 
-        {/* Stats */}
+        {/* ── Token wallet — grayed out, corporate accounts don't earn tokens ── */}
+        <div className="glow-card rounded-2xl p-5 mb-6 opacity-50 pointer-events-none select-none relative overflow-hidden">
+          {/* Lock overlay badge */}
+          <div className="absolute top-3 right-4 flex items-center gap-1.5 bg-surface-600 border border-brand-900/60 rounded-full px-3 py-1">
+            <span className="text-xs">🔒</span>
+            <span className="text-brand-700 text-xs font-mono">User accounts only</span>
+          </div>
+          <p className="text-brand-600 text-xs font-mono uppercase tracking-widest mb-3">Token Wallet</p>
+          <div className="flex items-end gap-6">
+            <div>
+              <p className="font-display text-4xl font-black text-brand-300">—</p>
+              <p className="text-brand-700 text-xs mt-1">Token Balance</p>
+            </div>
+            <div>
+              <p className="font-display text-4xl font-black text-brand-400">—</p>
+              <p className="text-brand-700 text-xs mt-1">₹ Equivalent</p>
+            </div>
+          </div>
+          <p className="text-brand-800 text-xs font-mono mt-3">
+            Green Tokens are earned by individual users on eco purchases. Corporate accounts track ESG metrics only.
+          </p>
+        </div>
+
+        {/* ESG Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[
-            { label: "Green Shoppers", value: stats.totalUsers.toLocaleString(), icon: "👥", color: "brand-300" },
-            { label: "Eco Purchases", value: stats.totalGreenPurchases.toLocaleString(), icon: "🛒", color: "brand-400" },
-            { label: "Tokens Distributed", value: stats.totalTokens.toLocaleString(), icon: "🪙", color: "brand-500" },
-            { label: "Carbon Saved (kg)", value: stats.carbonSaved.toFixed(1), icon: "🌍", color: "brand-400" },
+            { label: "Green Shoppers",    value: stats.totalUsers.toLocaleString(),           icon: "👥", color: "brand-300" },
+            { label: "Eco Purchases",     value: stats.totalGreenPurchases.toLocaleString(),  icon: "🛒", color: "brand-400" },
+            { label: "Tokens to Users",   value: stats.totalTokens.toLocaleString(),          icon: "🪙", color: "brand-500" },
+            { label: "Carbon Saved (kg)", value: stats.carbonSaved.toFixed(1),                icon: "🌍", color: "brand-400" },
           ].map(s => (
             <div key={s.label} className="glow-card rounded-2xl p-5">
               <div className="flex items-center gap-2 mb-3">
@@ -166,7 +184,7 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
           ))}
         </div>
 
-        {/* Monetary return */}
+        {/* Monetary return to users */}
         <div className="glow-card rounded-xl p-4 mb-6 flex items-center gap-4 border-brand-500/20">
           <span className="text-2xl">💰</span>
           <div>
@@ -193,7 +211,7 @@ export function CorporateClient({ user, stats, monthlyData, categoryData }: Corp
                   />
                   <Legend />
                   <Bar dataKey="purchases" name="Purchases" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="tokens" name="Tokens" fill="#4ade80" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="tokens"    name="Tokens"    fill="#4ade80" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
