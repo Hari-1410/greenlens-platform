@@ -1,9 +1,9 @@
 "use client";
 // components/dashboard/DashboardClient.tsx
-// Polls /api/wallet + /api/purchase every 5s so balance updates automatically
-// within seconds of the Chrome extension crediting tokens on Add to Cart.
+// Smart polling: burst on focus/visibility change, idle otherwise.
+// Burst = every 1.5s for 20s. Idle = every 30s. Stale-detection retries faster.
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { signOut } from "next-auth/react";
 import {
   LineChart, Line, BarChart, Bar,
@@ -14,8 +14,8 @@ import Link from "next/link";
 interface DashboardClientProps {
   userId:       string;
   user:         { name: string; email: string };
-  wallet:      { tokenBalance: number; moneyEquivalent: number };
-  purchases:   any[];
+  wallet:       { tokenBalance: number; moneyEquivalent: number };
+  purchases:    any[];
   transactions: any[];
   carbonSaved:  number;
   streakDays:   number;
@@ -28,6 +28,12 @@ const BADGES = [
   { id: "century",  icon: "🌳", name: "Token Century",   desc: "Earned 100+ tokens",             threshold: 100 },
   { id: "streaker", icon: "🔥", name: "Green Streak",    desc: "7+ day streak",                  threshold: 7  },
 ];
+
+// ── Polling config ────────────────────────────────────────────────────────────
+const BURST_INTERVAL_MS  = 1_500;   // poll every 1.5s during burst
+const BURST_DURATION_MS  = 20_000;  // burst lasts 20s after focus/visibility
+const IDLE_INTERVAL_MS   = 30_000;  // poll every 30s when idle
+const STALE_RETRY_MS     = 2_500;   // retry after 2.5s if balance unchanged mid-burst
 
 function calcStreakDays(purchases: any[]): number {
   if (purchases.length === 0) return 0;
@@ -68,59 +74,111 @@ export function DashboardClient({
   wallet:        initialWallet,
   purchases:     initialPurchases,
   transactions:  initialTransactions,
-  carbonSaved:   initialCarbonSaved,
-  streakDays:    _initialStreak,
-  monthlyData:   _initialMonthly,
 }: DashboardClientProps) {
   const [activeTab,    setActiveTab]    = useState<"overview" | "purchases" | "transactions">("overview");
   const [wallet,       setWallet]       = useState(initialWallet);
   const [purchases,    setPurchases]    = useState<any[]>(initialPurchases);
   const [transactions, setTransactions] = useState<any[]>(initialTransactions);
   const [tokenFlash,   setTokenFlash]   = useState<number | null>(null);
-  const prevBalanceRef = useRef<number>(initialWallet.tokenBalance);
+  const [isBursting,   setIsBursting]   = useState(false);
 
-  // ── Live polling: re-fetches wallet + purchases every 5s ─────────────────
-  useEffect(() => {
-    const poll = async () => {
-      try {
-        const [wRes, pRes, tRes] = await Promise.all([
-          fetch(`/api/wallet?userId=${userId}`,       { cache: "no-store" }),
-          fetch(`/api/purchase?userId=${userId}`,     { cache: "no-store" }),
-          fetch(`/api/transactions?userId=${userId}`, { cache: "no-store" }),
-        ]);
+  const prevBalanceRef  = useRef<number>(initialWallet.tokenBalance);
+  const burstUntilRef   = useRef<number>(0);       // epoch ms when burst ends
+  const intervalRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const staleRetryRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-        if (wRes.ok) {
-          const wJson    = await wRes.json();
-          const newWallet = wJson.wallet ?? wJson;
-          const newBal: number = newWallet.tokenBalance ?? 0;
+  // ── Core fetch ──────────────────────────────────────────────────────────────
+  const fetchAll = useCallback(async () => {
+    if (document.hidden) return; // skip when tab not visible
 
-          // Detect token increase → flash the balance card
-          if (newBal > prevBalanceRef.current) {
-            const earned = newBal - prevBalanceRef.current;
-            setTokenFlash(earned);
-            setTimeout(() => setTokenFlash(null), 3500);
-          }
-          prevBalanceRef.current = newBal;
-          setWallet(newWallet);
+    try {
+      const [wRes, pRes, tRes] = await Promise.all([
+        fetch(`/api/wallet?userId=${userId}`,       { cache: "no-store" }),
+        fetch(`/api/purchase?userId=${userId}`,     { cache: "no-store" }),
+        fetch(`/api/transactions?userId=${userId}`, { cache: "no-store" }),
+      ]);
+
+      if (wRes.ok) {
+        const wJson     = await wRes.json();
+        const newWallet = wJson.wallet ?? wJson;
+        const newBal: number = newWallet.tokenBalance ?? 0;
+        const prev = prevBalanceRef.current;
+
+        if (newBal > prev) {
+          // Balance increased → flash + stop burst
+          setTokenFlash(newBal - prev);
+          setTimeout(() => setTokenFlash(null), 3_500);
+          burstUntilRef.current = 0; // end burst early — we got what we wanted
+          setIsBursting(false);
+          scheduleInterval(IDLE_INTERVAL_MS);
+        } else if (newBal === prev && Date.now() < burstUntilRef.current) {
+          // Still bursting, balance unchanged — retry quickly via stale-retry
+          if (staleRetryRef.current) clearTimeout(staleRetryRef.current);
+          staleRetryRef.current = setTimeout(fetchAll, STALE_RETRY_MS);
         }
 
-        if (pRes.ok) {
-          const pJson = await pRes.json();
-          setPurchases(pJson.purchases ?? []);
-        }
-
-        if (tRes.ok) {
-          const tJson = await tRes.json();
-          setTransactions(tJson.transactions ?? []);
-        }
-      } catch (e) {
-        // silent — don't disrupt UI on transient network errors
+        prevBalanceRef.current = newBal;
+        setWallet(newWallet);
       }
-    };
 
-    const interval = setInterval(poll, 5_000);
-    return () => clearInterval(interval);
+      if (pRes.ok) {
+        const pJson = await pRes.json();
+        setPurchases(pJson.purchases ?? []);
+      }
+
+      if (tRes.ok) {
+        const tJson = await tRes.json();
+        setTransactions(tJson.transactions ?? []);
+      }
+    } catch {
+      // silent — transient network errors shouldn't break UI
+    }
   }, [userId]);
+
+  // ── Interval management ────────────────────────────────────────────────────
+  const scheduleInterval = useCallback((ms: number) => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(fetchAll, ms);
+  }, [fetchAll]);
+
+  // ── Burst trigger ──────────────────────────────────────────────────────────
+  const startBurst = useCallback(() => {
+    if (document.hidden) return;
+    burstUntilRef.current = Date.now() + BURST_DURATION_MS;
+    setIsBursting(true);
+    fetchAll(); // immediate fetch first
+    scheduleInterval(BURST_INTERVAL_MS);
+
+    // Auto-downgrade to idle after burst duration
+    setTimeout(() => {
+      setIsBursting(false);
+      scheduleInterval(IDLE_INTERVAL_MS);
+    }, BURST_DURATION_MS);
+  }, [fetchAll, scheduleInterval]);
+
+  // ── Mount: start idle polling ──────────────────────────────────────────────
+  useEffect(() => {
+    scheduleInterval(IDLE_INTERVAL_MS);
+    return () => {
+      if (intervalRef.current)  clearInterval(intervalRef.current);
+      if (staleRetryRef.current) clearTimeout(staleRetryRef.current);
+    };
+  }, [scheduleInterval]);
+
+  // ── Visibility change: burst when tab becomes visible ─────────────────────
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden) startBurst();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [startBurst]);
+
+  // ── Window focus: burst when user focuses the window ──────────────────────
+  useEffect(() => {
+    window.addEventListener("focus", startBurst);
+    return () => window.removeEventListener("focus", startBurst);
+  }, [startBurst]);
 
   // ── Derived values (recalculated from live purchases) ─────────────────────
   const streakDays  = calcStreakDays(purchases);
@@ -137,6 +195,7 @@ export function DashboardClient({
     return false;
   });
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-surface-900">
       {/* Sidebar */}
@@ -150,9 +209,9 @@ export function DashboardClient({
 
         <nav className="flex-1 p-4 space-y-1">
           {[
-            { id: "overview",      label: "Overview",      icon: "◎" },
-            { id: "purchases",     label: "Purchases",     icon: "◈" },
-            { id: "transactions",  label: "Transactions",  icon: "◆" },
+            { id: "overview",     label: "Overview",     icon: "◎" },
+            { id: "purchases",    label: "Purchases",    icon: "◈" },
+            { id: "transactions", label: "Transactions", icon: "◆" },
           ].map(item => (
             <button
               key={item.id}
@@ -197,8 +256,12 @@ export function DashboardClient({
           </div>
           {/* Live indicator */}
           <div className="flex items-center gap-2 text-xs text-brand-700 font-mono mt-1">
-            <span className={`w-2 h-2 rounded-full ${tokenFlash ? "bg-brand-300 animate-ping" : "bg-brand-600 animate-pulse"}`} />
-            {tokenFlash ? "Tokens credited!" : "Live · syncing every 5s"}
+            <span className={`w-2 h-2 rounded-full ${
+              tokenFlash  ? "bg-brand-300 animate-ping"   :
+              isBursting  ? "bg-yellow-400 animate-pulse" :
+                            "bg-brand-600 animate-pulse"
+            }`} />
+            {tokenFlash ? "Tokens credited!" : isBursting ? "Syncing…" : "Live"}
           </div>
         </div>
 
@@ -421,8 +484,8 @@ export function DashboardClient({
                       <tr key={t.id} className="border-b border-brand-900/20 hover:bg-brand-900/10 transition-colors">
                         <td className="px-6 py-4">
                           <span className={`gl-badge text-xs ${
-                            t.type === "EARN"   ? "bg-brand-500/20 text-brand-300 border border-brand-500/30" :
-                            t.type === "BONUS"  ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30" :
+                            t.type === "EARN"  ? "bg-brand-500/20 text-brand-300 border border-brand-500/30" :
+                            t.type === "BONUS" ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30" :
                             "bg-red-500/20 text-red-300 border border-red-500/30"
                           }`}>
                             {t.type}
